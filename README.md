@@ -4,6 +4,6 @@ A Tampermonkey userscript for automated course playback on the Yizhi platform, s
 
 ## Installation and Usage
 
-Create a new script in Tampermonkey, paste the entire contents of `pc.js`, and save. Sign in to the platform, refresh the page, and click the Start button on the floating panel. After updating the script, save and refresh again.
+Use a current version of Chrome. Create a new script in Tampermonkey, paste the entire contents of `pc.js`, and save. Sign in to the platform, refresh the page, and click the Start button on the floating panel. After updating the script, save and refresh all open course windows.
 
 Features include continuous course playback, automatic muting, and 1–6 concurrent course windows. If a section remains unmarked after playback and a synchronization wait, the script replays the last 30 seconds. It pauses if the section is still incomplete after three replays. The platform's learning records determine completion.
