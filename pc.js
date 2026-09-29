@@ -1,0 +1,2164 @@
+// ==UserScript==
+// @name         神奇海螺
+// @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
+// @version      1.5.1
+// @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
+// @author       gddagdda89
+// @license      MIT
+// @homepageURL  https://github.com/gddagdda89/yizhi-course-auto-study
+// @supportURL   https://github.com/gddagdda89/yizhi-course-auto-study/issues
+// @updateURL    https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/main/pc.js
+// @downloadURL  https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/main/pc.js
+// @match        https://pc.kmelearning.com/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    console.log("【神奇海螺 v1.5.1】脚本初始化启动...");
+
+    // 配置项
+    const CONFIG = {
+        checkInterval: 2000,      // 常规轮询检查周期 (ms)
+        heartbeatWait: 4000,       // 视频结束后等待最后一次心跳上报的时间 (ms)
+        completionReplaySeconds: 30, // 未打勾时重播末尾时长
+        maxCompletionReplays: 3,  // 单小节最多重播次数
+        replayStartTimeout: 15000, // 回退与恢复播放的总等待时间
+        replayPlayMaxAttempts: 3, // 每轮重播内，播放启动请求最多尝试次数
+        catalogWaitTimeout: 15000, // 返回目录的最大等待时间 (ms)
+        myTaskUrl: "https://pc.kmelearning.com/jsncxyslhs/home/my/myTask",
+        autoMute: true,           // 自动静音播放
+        playbackRate: 1.0,        // 正常播放速度
+        enableJitter: typeof navigator !== 'undefined', // 浏览器真实环境下开启拟人随机时间抖动
+        watchdogStallTimeout: 30000,   // 看门狗：视频进度卡住判定超时阈值 (30 秒)
+        watchdogMaxReloads: 5,        // 看门狗：单小节卡死最大刷新重试次数 (5 次)
+        watchdogMaxConsecutiveFails: 3, // 看门狗：连续卡死加载失败最大容忍小节数 (3 节)
+        defaultConcurrency: 1,        // 默认并发课程数 (1)
+        maxConcurrency: 6,            // 最大并发课程数 (6)
+    };
+
+    // 会话存储与跨标签存储脱敏键名映射（前缀去标识化，并兼容历史键名读取）
+    const STORAGE_KEYS = {
+        running: '_kme_running_state',
+        hudPos: '_kme_pref_pos',
+        hudCollapsed: '_kme_pref_col',
+        handledCourses: '_kme_h_courses',
+        handledMaps: '_kme_h_maps',
+        mapProgress: '_kme_m_progress',
+        watchdog: '_kme_wd_state',       // 看门狗跨刷新状态
+        completionReplay: '_kme_sync_replay', // 未打勾重播次数（跨刷新保留）
+        failedVideos: '_kme_wd_failed',   // 卡死跳过的小节列表
+        concurrency: '_kme_concurrency',  // 并发课程数设置 (1 ~ 6)
+        activeTabs: '_kme_active_tabs',   // 并发多标签页活跃状态表
+    };
+
+    function getStorageItem(keyName, legacyKey) {
+        try {
+            return sessionStorage.getItem(keyName) ?? (legacyKey ? sessionStorage.getItem(legacyKey) : null);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function setStorageItem(keyName, value) {
+        try {
+            sessionStorage.setItem(keyName, value);
+        } catch (_) {}
+    }
+
+    function removeStorageItem(keyName, legacyKey) {
+        try {
+            sessionStorage.removeItem(keyName);
+            if (legacyKey) sessionStorage.removeItem(legacyKey);
+        } catch (_) {}
+    }
+
+    function getLocalItem(keyName, fallback) {
+        try {
+            if (typeof localStorage === 'undefined') return fallback;
+            const v = localStorage.getItem(keyName);
+            return v !== null ? v : fallback;
+        } catch (_) {
+            return fallback;
+        }
+    }
+
+    function setLocalItem(keyName, value) {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem(keyName, value);
+            }
+        } catch (_) {}
+    }
+
+    function removeLocalItem(keyName) {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                localStorage.removeItem(keyName);
+            }
+        } catch (_) {}
+    }
+
+    // 跨标签页并发调度支持 (唯一 Tab 标识与多开协调)
+    const TAB_ID = 'kme_' + Math.random().toString(36).slice(2, 8) + '_' + Date.now().toString(36);
+
+    function getConcurrencySetting() {
+        const val = parseInt(getLocalItem(STORAGE_KEYS.concurrency, (CONFIG.defaultConcurrency || 1).toString()), 10);
+        if (isNaN(val) || val < 1) return 1;
+        if (val > (CONFIG.maxConcurrency || 6)) return CONFIG.maxConcurrency || 6;
+        return val;
+    }
+
+    function setConcurrencySetting(val) {
+        const clamped = Math.max(1, Math.min(CONFIG.maxConcurrency || 6, parseInt(val, 10) || 1));
+        setLocalItem(STORAGE_KEYS.concurrency, clamped.toString());
+        state.concurrency = clamped;
+        const valEl = getHUDElement('jinpei-concurrency-val');
+        if (valEl) valEl.innerText = clamped.toString();
+        const activeBadge = getHUDElement('jinpei-active-tabs-badge');
+        if (activeBadge) {
+            const activeCount = Math.max(1, Object.keys(getActiveTabs()).length);
+            activeBadge.innerText = `${activeCount}/${clamped}`;
+        }
+        return clamped;
+    }
+
+    function getActiveTabs() {
+        try {
+            const raw = getLocalItem(STORAGE_KEYS.activeTabs, '{}');
+            const map = JSON.parse(raw) || {};
+            const now = Date.now();
+            const alive = {};
+            for (const [id, data] of Object.entries(map)) {
+                if (data && typeof data.timestamp === 'number' && (now - data.timestamp < 8000)) {
+                    alive[id] = data;
+                }
+            }
+            return alive;
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function registerTabHeartbeat(courseKey, courseTitle, mapId) {
+        try {
+            const active = getActiveTabs();
+            active[TAB_ID] = {
+                courseKey: courseKey || "",
+                courseTitle: courseTitle || "",
+                mapId: mapId || getCurrentMapId() || "",
+                timestamp: Date.now(),
+                url: typeof location !== 'undefined' ? location.href : "",
+            };
+            setLocalItem(STORAGE_KEYS.activeTabs, JSON.stringify(active));
+        } catch (_) {}
+    }
+
+    function unregisterTab() {
+        try {
+            const active = getActiveTabs();
+            delete active[TAB_ID];
+            setLocalItem(STORAGE_KEYS.activeTabs, JSON.stringify(active));
+        } catch (_) {}
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('beforeunload', unregisterTab);
+    }
+
+    function getCurrentlyActiveCourses() {
+        const active = getActiveTabs();
+        const courses = [];
+        for (const [id, data] of Object.entries(active)) {
+            if (id !== TAB_ID && data && data.courseKey) {
+                courses.push(data.courseKey);
+            }
+        }
+        return courses;
+    }
+
+    function isCourseBusyByOtherTab(courseKey, courseTitle, mapId) {
+        const active = getActiveTabs();
+        const effectiveMapId = mapId || getCurrentMapId();
+        for (const [id, data] of Object.entries(active)) {
+            if (id === TAB_ID || !data) continue;
+            if (data.mapId && effectiveMapId && data.mapId !== effectiveMapId) continue;
+            if (courseKey && (data.courseKey === courseKey || data.courseKey === `${effectiveMapId}::${courseKey}`)) return true;
+            if (courseTitle && (data.courseTitle === courseTitle || data.courseKey === courseTitle)) return true;
+            if (data.courseKey && courseTitle && data.courseKey === courseTitle) return true;
+        }
+        return false;
+    }
+
+    function tryClaimCourseSlot(courseKey, courseTitle, mapId) {
+        if (isCourseBusyByOtherTab(courseKey, courseTitle, mapId)) {
+            return false;
+        }
+        registerTabHeartbeat(courseKey, courseTitle, mapId);
+        return true;
+    }
+
+    // 全局状态管理：默认首次打开时不自动运行；若用户手动点击了【开始学习】，则在当前标签页的流转与刷新中持续保持运行！
+    const hasLiveActiveTabs = Object.keys(getActiveTabs()).length > 0;
+    const isSessionRunning = getStorageItem(STORAGE_KEYS.running, 'jinpei_auto_running') === 'true' ||
+        (hasLiveActiveTabs && getLocalItem(STORAGE_KEYS.running) === 'true');
+
+    const state = {
+        enabled: isSessionRunning,
+        concurrency: getConcurrencySetting(),
+        statusText: isSessionRunning ? "正在自动流转中..." : "待启动（请点击【开始学习】）",
+        currentTask: "",
+        currentCourse: "",
+        currentSubVideo: "",
+        videoProgress: "",
+        allCoursesProgress: "",    // 全部课程进度 x/n (如 "2 / 3 门 (66%)")
+        courseTotalProgress: "",   // 当前课程总进度 (如 "4/8 节 · 00:52:31 / 01:51:41 (47%)")
+        courseTotalPercent: 0,
+        isSwitching: false,
+        isActionPending: false,    // 防重复调度与并发点击锁
+        syncRetryCount: 0,         // 当前小节心跳同步重试计数
+        lastJumpTime: 0,
+        lastTabSpawnTime: 0,       // 并发子窗口唤起防抖节流
+    };
+
+    // [防检测 1: 拟人随机数与时间抖动发生器 Human Jitter]
+    function randomBetween(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    // [防检测 2: 拟人化真实坐标与鼠标事件链点击 Simulated Human Click]
+    function simulateHumanClick(el) {
+        if (!el) return;
+        try {
+            const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+            let x = 0, y = 0;
+            if (rect && rect.width > 0 && rect.height > 0) {
+                const rx = 0.25 + 0.5 * Math.random();
+                const ry = 0.25 + 0.5 * Math.random();
+                x = Math.round(rect.left + rect.width * rx);
+                y = Math.round(rect.top + rect.height * ry);
+            } else if (typeof window !== 'undefined') {
+                x = Math.round((window.innerWidth || 1024) / 2 + (Math.random() * 40 - 20));
+                y = Math.round((window.innerHeight || 768) / 2 + (Math.random() * 40 - 20));
+            }
+
+            const commonProps = {
+                bubbles: true,
+                cancelable: true,
+                view: typeof window !== 'undefined' ? window : null,
+                clientX: x,
+                clientY: y,
+                screenX: x + 10,
+                screenY: y + 10,
+            };
+
+            if (typeof MouseEvent === 'function' && typeof el.dispatchEvent === 'function') {
+                el.dispatchEvent(new MouseEvent('mouseover', commonProps));
+                el.dispatchEvent(new MouseEvent('mousemove', commonProps));
+                el.dispatchEvent(new MouseEvent('mousedown', { ...commonProps, buttons: 1, button: 0 }));
+                el.dispatchEvent(new MouseEvent('mouseup', { ...commonProps, buttons: 0, button: 0 }));
+                el.dispatchEvent(new MouseEvent('click', { ...commonProps, buttons: 0, button: 0 }));
+            }
+        } catch (_) {}
+
+        if (typeof el.click === 'function') {
+            el.click();
+        }
+    }
+
+    // [防检测 4: Shadow DOM 内部元素寻址隔离器]
+    let hudShadowRoot = null;
+    function getHUDElement(id) {
+        if (hudShadowRoot && typeof hudShadowRoot.getElementById === 'function') {
+            return hudShadowRoot.getElementById(id) || (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
+        }
+        return typeof document.getElementById === 'function' ? document.getElementById(id) : null;
+    }
+
+    // 定时器集中管理器：支持暂停时一键清空所有已安排的定时任务（真实运行下自动加入拟人时间抖动）
+    const activeTimers = new Set();
+    function setManagedTimeout(fn, delay) {
+        let actualDelay = delay;
+        // 在浏览器真实环境下引入 15% 随机时间抖动，抹除固定的机器定时特征（Node单元测试环境保持精准）
+        if (CONFIG.enableJitter && typeof delay === 'number' && delay > 0) {
+            const variance = Math.max(50, Math.floor(delay * 0.15));
+            actualDelay = randomBetween(delay - variance, delay + variance);
+        }
+        let timerId = null;
+        timerId = setTimeout(() => {
+            activeTimers.delete(timerId);
+            if (!state.enabled) return; // 执行前二次校验运行状态
+            fn();
+        }, actualDelay);
+        activeTimers.add(timerId);
+        return timerId;
+    }
+
+    function clearAllManagedTimeouts() {
+        for (const t of activeTimers) {
+            clearTimeout(t);
+        }
+        activeTimers.clear();
+    }
+
+    function pauseAutomation(message) {
+        completionReplayGeneration++;
+        completionReplayMemory = null;
+        removeStorageItem(STORAGE_KEYS.completionReplay);
+        state.enabled = false;
+        removeStorageItem(STORAGE_KEYS.running, 'jinpei_auto_running');
+        removeLocalItem(STORAGE_KEYS.running);
+        unregisterTab();
+        clearAllManagedTimeouts();
+        clearWatchdogState();
+        state.isSwitching = false;
+        state.isActionPending = false;
+        state.syncRetryCount = 0;
+
+        const video = document.querySelector('video');
+        if (video && !video.paused) video.pause();
+
+        const icon = getHUDElement('jinpei-btn-icon');
+        const text = getHUDElement('jinpei-btn-text');
+        const button = getHUDElement('jinpei-toggle-btn');
+        const dot = getHUDElement('jinpei-hud-dot');
+        const status = getHUDElement('jinpei-hud-status');
+        if (icon) icon.innerText = "▶";
+        if (text) text.innerText = "开始自动学习";
+        if (button) {
+            button.style.background = "linear-gradient(135deg, #10b981 0%, #059669 100%)";
+            button.style.boxShadow = "0 4px 14px rgba(16, 185, 129, 0.3)";
+        }
+        if (dot) {
+            dot.style.background = "#f59e0b";
+            dot.style.animation = "jinpei-amber-pulse 2s infinite ease-in-out";
+        }
+        if (status) status.style.color = "#d97706";
+        updateHUD(message);
+    }
+
+    // ==========================================
+    // 1. 悬浮 HUD 状态面板（现代浅色高透光磨砂玻璃态设计 + 可拖拽 + 折叠）
+    // ==========================================
+    // ==========================================
+    // 1. 悬浮 HUD 状态面板（现代浅色高透光磨砂玻璃态设计 + Shadow DOM 隔离 + 可拖拽 + 折叠）
+    // ==========================================
+    function ensureHUDStyles(targetRoot) {
+        const root = targetRoot || document.head || document.body;
+        if (!root) return;
+        if (root.querySelector && root.querySelector('#jinpei-hud-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'jinpei-hud-styles';
+        style.innerHTML = `
+            @keyframes jinpei-pulse {
+                0% { transform: scale(0.92); opacity: 0.7; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+                70% { transform: scale(1.08); opacity: 1; box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+                100% { transform: scale(0.92); opacity: 0.7; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+            }
+            @keyframes jinpei-amber-pulse {
+                0% { transform: scale(0.92); opacity: 0.7; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6); }
+                70% { transform: scale(1.08); opacity: 1; box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+                100% { transform: scale(0.92); opacity: 0.7; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+            }
+            .jinpei-glass, .jinpei-glass * {
+                box-sizing: border-box !important;
+            }
+            .jinpei-glass {
+                position: fixed;
+                z-index: 999999;
+                /* 浅色高通透 Apple 风格毛玻璃 */
+                background: rgba(255, 255, 255, 0.72) !important;
+                backdrop-filter: blur(24px) saturate(180%) !important;
+                -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
+                border: 1px solid rgba(255, 255, 255, 0.85) !important;
+                border-radius: 18px !important;
+                box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.6) inset, 0 2px 4px rgba(0, 0, 0, 0.04) !important;
+                color: #1e293b !important;
+                font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+                user-select: none;
+                overflow: hidden;
+                white-space: nowrap !important;
+                transition: box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease;
+            }
+            .jinpei-glass:hover {
+                background: rgba(255, 255, 255, 0.82) !important;
+                border-color: rgba(255, 255, 255, 0.95) !important;
+                box-shadow: 0 24px 48px -10px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(255, 255, 255, 0.8) inset !important;
+            }
+            .jinpei-info-box {
+                background: rgba(255, 255, 255, 0.45);
+                border: 1px solid rgba(255, 255, 255, 0.85);
+                border-radius: 12px;
+                padding: 10px 12px;
+                backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px);
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02) inset;
+            }
+            .jinpei-btn-action {
+                cursor: pointer;
+                border: none;
+                outline: none;
+                border-radius: 9px;
+                font-weight: 600;
+                font-size: 13px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            .jinpei-btn-action:hover {
+                filter: brightness(1.08);
+                transform: translateY(-1px);
+            }
+            .jinpei-btn-action:active {
+                transform: translateY(1px);
+                filter: brightness(0.96);
+            }
+            .jinpei-icon-btn {
+                background: rgba(0, 0, 0, 0.04);
+                border: 1px solid rgba(0, 0, 0, 0.06);
+                color: #64748b;
+                width: 24px;
+                height: 24px;
+                border-radius: 6px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                font-size: 13px;
+                line-height: 1;
+                transition: all 0.2s ease;
+            }
+            .jinpei-icon-btn:hover {
+                background: rgba(0, 0, 0, 0.08);
+                color: #0f172a;
+                border-color: rgba(0, 0, 0, 0.12);
+            }
+        `;
+        root.appendChild(style);
+    }
+
+    function createHUD() {
+        if (getHUDElement('jinpei-hud')) return;
+
+        let host = document.getElementById('_kme_tool_host');
+        if (!host && typeof document.createElement === 'function' && document.body) {
+            host = document.createElement('div');
+            host.id = '_kme_tool_host';
+            host.style.position = 'absolute';
+            host.style.top = '0';
+            host.style.left = '0';
+            host.style.zIndex = '999999';
+            document.body.appendChild(host);
+        }
+
+        if (host && typeof host.attachShadow === 'function' && !hudShadowRoot) {
+            try {
+                hudShadowRoot = host.attachShadow({ mode: 'open' });
+            } catch (_) {
+                hudShadowRoot = null;
+            }
+        }
+
+        const renderRoot = hudShadowRoot || document.body;
+        if (!renderRoot) return;
+
+        ensureHUDStyles(renderRoot);
+
+        const hud = document.createElement('div');
+        hud.id = 'jinpei-hud';
+        hud.className = 'jinpei-glass';
+
+        // 恢复拖动位置（脱敏键名）
+        let savedPos = null;
+        try {
+            savedPos = JSON.parse(getStorageItem(STORAGE_KEYS.hudPos, 'jinpei_hud_pos'));
+        } catch (_) {}
+
+        if (savedPos && savedPos.left && savedPos.top) {
+            hud.style.left = savedPos.left;
+            hud.style.top = savedPos.top;
+            hud.style.right = 'auto';
+        } else {
+            hud.style.top = '24px';
+            hud.style.right = '24px';
+        }
+
+        let isCollapsed = false;
+        try {
+            isCollapsed = getStorageItem(STORAGE_KEYS.hudCollapsed, 'jinpei_hud_collapsed') === 'true';
+        } catch (_) {}
+        hud.style.width = isCollapsed ? 'auto' : '320px';
+        hud.style.minWidth = isCollapsed ? '210px' : '320px';
+
+        const btnText = state.enabled ? "暂停自动学习" : "开始自动学习";
+        const btnIcon = state.enabled ? "⏸" : "▶";
+        const btnBg = state.enabled 
+            ? "linear-gradient(135deg, #f43f5e 0%, #e11d48 100%)" 
+            : "linear-gradient(135deg, #10b981 0%, #059669 100%)";
+        const btnShadow = state.enabled
+            ? "0 4px 14px rgba(244, 63, 94, 0.3)"
+            : "0 4px 14px rgba(16, 185, 129, 0.3)";
+        const dotBg = state.enabled ? "#10b981" : "#f59e0b";
+        const dotAnim = state.enabled ? "jinpei-pulse 2s infinite ease-in-out" : "jinpei-amber-pulse 2s infinite ease-in-out";
+
+        hud.innerHTML = `
+            <!-- 顶部炫彩渐变微光线条 -->
+            <div style="height: 3px; background: linear-gradient(90deg, #38bdf8 0%, #818cf8 50%, #f472b6 100%);"></div>
+
+            <!-- 可拖动顶栏 -->
+            <div id="jinpei-hud-header" style="padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; border-bottom: ${isCollapsed ? 'none' : '1px solid rgba(0, 0, 0, 0.06)'}; white-space: nowrap;">
+                <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
+                    <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
+                    <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">神奇海螺</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.1</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
+                    <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
+                    <button id="jinpei-hud-min-btn" class="jinpei-icon-btn" style="flex-shrink: 0;" title="${isCollapsed ? '展开面板' : '折叠面板'}">${isCollapsed ? '＋' : '−'}</button>
+                </div>
+            </div>
+
+            <!-- 主体内容卡片 -->
+            <div id="jinpei-hud-body" style="display: ${isCollapsed ? 'none' : 'block'}; padding: 12px 14px 14px 14px;">
+                <!-- 快捷启动/暂停按键 -->
+                <button id="jinpei-toggle-btn" class="jinpei-btn-action" style="
+                    width: 100%;
+                    padding: 8px 12px;
+                    margin-bottom: 10px;
+                    background: ${btnBg};
+                    color: #ffffff;
+                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    box-shadow: ${btnShadow};
+                ">
+                    <span id="jinpei-btn-icon">${btnIcon}</span>
+                    <span id="jinpei-btn-text">${btnText}</span>
+                </button>
+
+                <!-- 浅色磨砂信息栏 -->
+                <div class="jinpei-info-box" style="
+                    display: flex;
+                    flex-direction: column;
+                    gap: 7px;
+                ">
+                    <!-- 状态 -->
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="font-size: 11px; color: #64748b; display: flex; align-items: center; gap: 4px;">
+                            <span>⚡</span> 运行状态
+                        </span>
+                        <span id="jinpei-hud-status" style="font-size: 11px; color: ${state.enabled ? '#0284c7' : '#d97706'}; font-weight: 500; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${state.statusText}</span>
+                    </div>
+
+                    <!-- 任务 -->
+                    <div id="jinpei-hud-task-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                        <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
+                            <span>📋</span> 任务
+                        </span>
+                        <span id="jinpei-hud-task" style="font-size: 11px; color: #d97706; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                    </div>
+
+                    <!-- 课程 -->
+                    <div id="jinpei-hud-course-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                        <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
+                            <span>📚</span> 课程
+                        </span>
+                        <span id="jinpei-hud-course" style="font-size: 11px; color: #7c3aed; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                    </div>
+
+                    <!-- 全部课程进度 x/n -->
+                    <div id="jinpei-hud-all-courses-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                        <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
+                            <span>🗺️</span> 全部课程
+                        </span>
+                        <span id="jinpei-hud-all-courses" style="font-size: 11px; color: #059669; font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                    </div>
+
+                    <!-- 小节 -->
+                    <div id="jinpei-hud-sub-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                        <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
+                            <span>🎬</span> 小节
+                        </span>
+                        <span id="jinpei-hud-sub" style="font-size: 11px; color: #db2777; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                    </div>
+
+                    <!-- 本课总进度（总时长 + 百分比） -->
+                    <div id="jinpei-hud-course-prog-row" style="display: none; margin-top: 2px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 4px;">
+                            <span style="color: #64748b; display: flex; align-items: center; gap: 4px;">
+                                <span>📊</span> 本课总览
+                            </span>
+                            <span id="jinpei-hud-course-prog" style="color: #7c3aed; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">-</span>
+                        </div>
+                        <div style="width: 100%; height: 4px; background: rgba(0, 0, 0, 0.06); border-radius: 9999px; overflow: hidden;">
+                            <div id="jinpei-hud-course-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #a855f7, #ec4899); border-radius: 9999px; transition: width 0.3s ease;"></div>
+                        </div>
+                    </div>
+
+                    <!-- 单节播放进度 -->
+                    <div id="jinpei-hud-progress-row" style="display: none; margin-top: 2px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 4px;">
+                            <span style="color: #64748b; display: flex; align-items: center; gap: 4px;">
+                                <span>⏱</span> 单节播放
+                            </span>
+                            <span id="jinpei-hud-progress" style="color: #0284c7; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">-</span>
+                        </div>
+                        <div style="width: 100%; height: 4px; background: rgba(0, 0, 0, 0.06); border-radius: 9999px; overflow: hidden;">
+                            <div id="jinpei-hud-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #38bdf8, #6366f1); border-radius: 9999px; transition: width 0.3s ease;"></div>
+                        </div>
+                    </div>
+
+                    <!-- 并发课程控制 (1 ~ 6 路) -->
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 5px; border-top: 1px dashed rgba(0, 0, 0, 0.08); margin-top: 2px;">
+                        <span style="font-size: 11px; color: #475569; display: flex; align-items: center; gap: 4px; font-weight: 500;">
+                            <span>🚀</span> 并发课程
+                        </span>
+                        <div style="display: flex; align-items: center; gap: 5px;">
+                            <button id="jinpei-concurrency-dec" title="减少并发课程" style="width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.85); color: #334155; font-size: 13px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">−</button>
+                            <span id="jinpei-concurrency-val" style="font-size: 13px; font-weight: 700; color: #0284c7; min-width: 16px; text-align: center; font-family: ui-monospace, monospace;">${state.concurrency}</span>
+                            <button id="jinpei-concurrency-inc" title="增加并发课程 (最高 6 路)" style="width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.85); color: #334155; font-size: 13px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">＋</button>
+                            <span id="jinpei-active-tabs-badge" style="font-size: 10px; color: #059669; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 4px; padding: 1px 5px; font-weight: 600; white-space: nowrap;" title="当前活跃标签页 / 目标并发数">1/1</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 底部提示 -->
+                <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94a3b8; padding: 0 2px;">
+                    <span>按住顶部可拖动</span>
+                    <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; text-decoration: underline;" title="在后台多开一个课程页面">多开 1 窗口</span>
+                    <span>1.0x 标准播放</span>
+                </div>
+            </div>
+        `;
+
+        renderRoot.appendChild(hud);
+
+        const header = getHUDElement('jinpei-hud-header');
+        const minBtn = getHUDElement('jinpei-hud-min-btn');
+        const bodyEl = getHUDElement('jinpei-hud-body');
+        const miniStatusEl = getHUDElement('jinpei-hud-mini-status');
+        const versionEl = getHUDElement('jinpei-hud-version');
+        const toggleBtn = getHUDElement('jinpei-toggle-btn');
+        const btnIconEl = getHUDElement('jinpei-btn-icon');
+        const btnTextEl = getHUDElement('jinpei-btn-text');
+        const dot = getHUDElement('jinpei-hud-dot');
+        const statusEl = getHUDElement('jinpei-hud-status');
+
+        // 边界吸附与溢出校正：保证 HUD 在折叠、展开或窗口缩放时始终完整可见不换行
+        function clampHUDPosition() {
+            const maxLeft = Math.max(10, window.innerWidth - hud.offsetWidth - 10);
+            const maxTop = Math.max(10, window.innerHeight - hud.offsetHeight - 10);
+            const curLeft = parseInt(hud.style.left, 10);
+            const curTop = parseInt(hud.style.top, 10);
+            if (!isNaN(curLeft)) {
+                hud.style.left = `${Math.max(10, Math.min(maxLeft, curLeft))}px`;
+            }
+            if (!isNaN(curTop)) {
+                hud.style.top = `${Math.max(10, Math.min(maxTop, curTop))}px`;
+            }
+        }
+
+        // 折叠 / 展开交互
+        minBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            isCollapsed = !isCollapsed;
+            setStorageItem(STORAGE_KEYS.hudCollapsed, isCollapsed ? 'true' : 'false');
+
+            if (isCollapsed) {
+                bodyEl.style.display = 'none';
+                minBtn.innerText = '＋';
+                minBtn.title = '展开面板';
+                hud.style.width = 'auto';
+                hud.style.minWidth = '210px';
+                header.style.borderBottom = 'none';
+                if (versionEl) versionEl.style.display = 'none';
+                if (miniStatusEl) miniStatusEl.style.display = 'inline-block';
+            } else {
+                bodyEl.style.display = 'block';
+                minBtn.innerText = '−';
+                minBtn.title = '折叠面板';
+                hud.style.width = '320px';
+                hud.style.minWidth = '320px';
+                header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.06)';
+                if (versionEl) versionEl.style.display = 'inline-block';
+                if (miniStatusEl) miniStatusEl.style.display = 'none';
+            }
+            clampHUDPosition();
+            setStorageItem(STORAGE_KEYS.hudPos, JSON.stringify({
+                left: hud.style.left,
+                top: hud.style.top
+            }));
+        });
+
+        // 窗口尺寸变化时自动校正 HUD 坐标
+        window.addEventListener('resize', clampHUDPosition);
+
+        // 自由拖拽交互
+        let isDragging = false;
+        let startX = 0, startY = 0;
+        let initialLeft = 0, initialTop = 0;
+
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button')) return;
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            const rect = hud.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+            hud.style.transition = 'none';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            let newLeft = initialLeft + dx;
+            let newTop = initialTop + dy;
+
+            const maxLeft = window.innerWidth - hud.offsetWidth - 10;
+            const maxTop = window.innerHeight - hud.offsetHeight - 10;
+            newLeft = Math.max(10, Math.min(maxLeft, newLeft));
+            newTop = Math.max(10, Math.min(maxTop, newTop));
+
+            hud.style.left = `${newLeft}px`;
+            hud.style.top = `${newTop}px`;
+            hud.style.right = 'auto';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                clampHUDPosition();
+                hud.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease';
+                setStorageItem(STORAGE_KEYS.hudPos, JSON.stringify({
+                    left: hud.style.left,
+                    top: hud.style.top
+                }));
+            }
+        });
+
+        // 开始 / 暂停切换
+        toggleBtn.addEventListener('click', () => {
+            state.enabled = !state.enabled;
+            if (state.enabled) {
+                setStorageItem(STORAGE_KEYS.running, 'true');
+                setLocalItem(STORAGE_KEYS.running, 'true');
+                btnIconEl.innerText = "⏸";
+                btnTextEl.innerText = "暂停自动学习";
+                toggleBtn.style.background = "linear-gradient(135deg, #f43f5e 0%, #e11d48 100%)";
+                toggleBtn.style.boxShadow = "0 4px 14px rgba(244, 63, 94, 0.3)";
+                dot.style.background = "#10b981";
+                dot.style.animation = "jinpei-pulse 2s infinite ease-in-out";
+                statusEl.style.color = "#0284c7";
+                updateHUD("已手动启动，正在运行中...");
+                console.log("【神奇海螺】用户手动点击启动自动化！");
+                mainLoop();
+            } else {
+                pauseAutomation("已手动暂停（所有待执行操作已取消）");
+                console.log("【神奇海螺】用户手动点击暂停，已清空待执行定时器并暂停视频。");
+            }
+        });
+
+        // 并发调节与多开按键交互
+        const decBtn = getHUDElement('jinpei-concurrency-dec');
+        const incBtn = getHUDElement('jinpei-concurrency-inc');
+        const openTabBtn = getHUDElement('jinpei-open-tab-btn');
+
+        if (decBtn && typeof decBtn.addEventListener === 'function') {
+            decBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const cur = getConcurrencySetting();
+                if (cur > 1) {
+                    const next = setConcurrencySetting(cur - 1);
+                    console.log(`【神奇海螺】并发设置减少至: ${next} 路`);
+                    updateHUD(`并发课程数已调整为 ${next} 路`);
+                }
+            });
+        }
+
+        if (incBtn && typeof incBtn.addEventListener === 'function') {
+            incBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const cur = getConcurrencySetting();
+                if (cur < (CONFIG.maxConcurrency || 6)) {
+                    const next = setConcurrencySetting(cur + 1);
+                    console.log(`【神奇海螺】并发设置增加至: ${next} 路`);
+                    updateHUD(`并发课程数已调整为 ${next} 路`);
+                    const activeCount = Object.keys(getActiveTabs()).length;
+                    if (activeCount < next && typeof window !== 'undefined' && typeof window.open === 'function' && location.href.includes('/home/training/study/')) {
+                        try {
+                            window.open(location.href, '_blank');
+                        } catch (_) {}
+                    }
+                }
+            });
+        }
+
+        if (openTabBtn && typeof openTabBtn.addEventListener === 'function') {
+            openTabBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                try {
+                    const cur = getConcurrencySetting();
+                    if (cur < (CONFIG.maxConcurrency || 6)) {
+                        setConcurrencySetting(cur + 1);
+                    }
+                    if (typeof window !== 'undefined' && typeof window.open === 'function') {
+                        window.open(location.href, '_blank');
+                        updateHUD("正在唤起新窗口进行并发学习...");
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            });
+        }
+    }
+
+    function updateHUD(status, task, sub, progress, course, allCoursesProg, courseTotalProg, courseTotalPercent) {
+        if (status) state.statusText = status;
+        if (task !== undefined) state.currentTask = task;
+        if (sub !== undefined) state.currentSubVideo = sub;
+        if (progress !== undefined) state.videoProgress = progress;
+        if (course !== undefined) state.currentCourse = course;
+        if (allCoursesProg !== undefined) state.allCoursesProgress = allCoursesProg;
+        if (courseTotalProg !== undefined) state.courseTotalProgress = courseTotalProg;
+        if (courseTotalPercent !== undefined) state.courseTotalPercent = courseTotalPercent;
+
+        const statusEl = getHUDElement('jinpei-hud-status');
+        const taskRow = getHUDElement('jinpei-hud-task-row');
+        const taskEl = getHUDElement('jinpei-hud-task');
+        const courseRow = getHUDElement('jinpei-hud-course-row');
+        const courseEl = getHUDElement('jinpei-hud-course');
+        const allCoursesRow = getHUDElement('jinpei-hud-all-courses-row');
+        const allCoursesEl = getHUDElement('jinpei-hud-all-courses');
+        const subRow = getHUDElement('jinpei-hud-sub-row');
+        const subEl = getHUDElement('jinpei-hud-sub');
+        const courseProgRow = getHUDElement('jinpei-hud-course-prog-row');
+        const courseProgEl = getHUDElement('jinpei-hud-course-prog');
+        const courseBarFill = getHUDElement('jinpei-hud-course-bar-fill');
+        const progRow = getHUDElement('jinpei-hud-progress-row');
+        const progEl = getHUDElement('jinpei-hud-progress');
+        const barFill = getHUDElement('jinpei-hud-bar-fill');
+        const miniStatusEl = getHUDElement('jinpei-hud-mini-status');
+
+        if (statusEl) {
+            statusEl.innerText = state.statusText;
+            statusEl.title = state.statusText;
+        }
+
+        if (taskRow && taskEl) {
+            if (state.currentTask) {
+                taskRow.style.display = 'flex';
+                taskEl.innerText = state.currentTask;
+                taskEl.title = state.currentTask;
+            } else {
+                taskRow.style.display = 'none';
+            }
+        }
+
+        if (courseRow && courseEl) {
+            if (state.currentCourse) {
+                courseRow.style.display = 'flex';
+                courseEl.innerText = state.currentCourse;
+                courseEl.title = state.currentCourse;
+            } else {
+                courseRow.style.display = 'none';
+            }
+        }
+
+        if (allCoursesRow && allCoursesEl) {
+            if (state.allCoursesProgress) {
+                allCoursesRow.style.display = 'flex';
+                allCoursesEl.innerText = state.allCoursesProgress;
+                allCoursesEl.title = state.allCoursesProgress;
+            } else {
+                allCoursesRow.style.display = 'none';
+            }
+        }
+
+        if (subRow && subEl) {
+            if (state.currentSubVideo) {
+                subRow.style.display = 'flex';
+                subEl.innerText = state.currentSubVideo;
+                subEl.title = state.currentSubVideo;
+            } else {
+                subRow.style.display = 'none';
+            }
+        }
+
+        if (courseProgRow && courseProgEl) {
+            if (state.courseTotalProgress) {
+                courseProgRow.style.display = 'block';
+                courseProgEl.innerText = state.courseTotalProgress;
+                courseProgEl.title = state.courseTotalProgress;
+                if (courseBarFill) {
+                    courseBarFill.style.width = (state.courseTotalPercent || 0) + '%';
+                }
+            } else {
+                courseProgRow.style.display = 'none';
+            }
+        }
+
+        if (progRow && progEl) {
+            if (state.videoProgress) {
+                progRow.style.display = 'block';
+                progEl.innerText = state.videoProgress;
+
+                // 动态更新单节进度条长度
+                const match = state.videoProgress.match(/(\d+)%/);
+                if (barFill && match) {
+                    barFill.style.width = match[1] + '%';
+                } else if (barFill && state.videoProgress === '100%') {
+                    barFill.style.width = '100%';
+                }
+            } else {
+                progRow.style.display = 'none';
+            }
+        }
+
+        const concValEl = getHUDElement('jinpei-concurrency-val');
+        if (concValEl) {
+            concValEl.innerText = (state.concurrency || getConcurrencySetting()).toString();
+        }
+
+        const activeBadge = getHUDElement('jinpei-active-tabs-badge');
+        if (activeBadge) {
+            const activeCount = Math.max(1, Object.keys(getActiveTabs()).length);
+            const target = state.concurrency || getConcurrencySetting();
+            activeBadge.innerText = `${activeCount}/${target}`;
+            activeBadge.title = `当前活跃标签页: ${activeCount} / 目标并发数: ${target}`;
+        }
+
+        if (miniStatusEl) {
+            const conc = state.concurrency || getConcurrencySetting();
+            const concTag = conc > 1 ? ` · ${conc}路` : '';
+            if (state.courseTotalPercent > 0) {
+                miniStatusEl.innerText = `${state.courseTotalPercent}%${concTag}`;
+            } else if (state.videoProgress) {
+                const m = state.videoProgress.match(/(\d+%)/);
+                miniStatusEl.innerText = `${m ? m[1] : state.videoProgress}${concTag}`;
+            } else if (state.enabled) {
+                miniStatusEl.innerText = `运行中${concTag}`;
+            } else {
+                miniStatusEl.innerText = '已暂停';
+            }
+        }
+    }
+
+    // ==========================================
+    // 2. 防暂停与防后台挂机机制（动态联动：运行生效，暂停释放）
+    // ==========================================
+    function enableAntiPause() {
+        try {
+            const origHiddenDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden') || Object.getOwnPropertyDescriptor(document, 'hidden');
+            const origVisibilityDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState') || Object.getOwnPropertyDescriptor(document, 'visibilityState');
+            const origWebkitVisibilityDesc = Object.getOwnPropertyDescriptor(document, 'webkitVisibilityState') || Object.getOwnPropertyDescriptor(Document.prototype, 'webkitVisibilityState');
+            const origWebkitVisibility = document.webkitVisibilityState;
+
+            // 仅在 state.enabled 为 true 时伪装前台可见，暂停时返回浏览器原生状态
+            Object.defineProperty(document, 'hidden', {
+                get: () => state.enabled ? false : (origHiddenDesc && origHiddenDesc.get ? origHiddenDesc.get.call(document) : false),
+                configurable: true
+            });
+            Object.defineProperty(document, 'visibilityState', {
+                get: () => state.enabled ? 'visible' : (origVisibilityDesc && origVisibilityDesc.get ? origVisibilityDesc.get.call(document) : 'visible'),
+                configurable: true
+            });
+            Object.defineProperty(document, 'webkitVisibilityState', {
+                get: () => state.enabled ? 'visible' : (
+                    origWebkitVisibilityDesc && origWebkitVisibilityDesc.get
+                        ? origWebkitVisibilityDesc.get.call(document)
+                        : (origWebkitVisibilityDesc && 'value' in origWebkitVisibilityDesc
+                            ? origWebkitVisibilityDesc.value
+                            : (origWebkitVisibility !== undefined ? origWebkitVisibility : document.visibilityState))
+                ),
+                configurable: true
+            });
+
+            // 事件拦截：仅在 state.enabled 为 true 时拦截，暂停状态下放行
+            window.addEventListener('blur', (e) => {
+                if (state.enabled) e.stopImmediatePropagation();
+            }, true);
+            window.addEventListener('mouseleave', (e) => {
+                if (state.enabled) e.stopImmediatePropagation();
+            }, true);
+            document.addEventListener('visibilitychange', (e) => {
+                if (state.enabled) e.stopImmediatePropagation();
+            }, true);
+
+            console.log("【神奇海螺】防暂停与防后台机制已初始化（随【开始/暂停】动态生效）。");
+        } catch (e) {
+            console.warn("【神奇海螺】防暂停注入异常:", e);
+        }
+    }
+
+    // 智能关闭弹窗：严格限定在弹窗/遮罩层容器内部寻找，避免误触页面常规按钮，排除神奇海螺面板本身
+    function autoDismissDialogs() {
+        if (!state.enabled) return;
+
+        const dialogContainers = Array.from(document.querySelectorAll(
+            '.ant5-modal:not(#jinpei-hud), .ant-modal, .ant5-modal-content, [role="dialog"], div[class*="modal-content"], div[class*="dialog-content"]'
+        )).filter(d => !d.closest('#jinpei-hud') && !d.closest('#_kme_tool_host') && d.offsetParent !== null);
+
+        for (const dialog of dialogContainers) {
+            const dialogText = (dialog.innerText || '').trim();
+
+            const buttons = Array.from(dialog.querySelectorAll('button, .ant5-btn, [role="button"]'))
+                .filter(b => b.offsetParent !== null);
+
+            for (const btn of buttons) {
+                const btnText = (btn.innerText || '').trim();
+
+                // 1. 明确的学习/播放恢复按钮（精确匹配），直接点击
+                if (/^(继续学习|继续播放)$/.test(btnText)) {
+                    console.log("【神奇海螺】检测到学习恢复弹窗，点击继续:", btnText);
+                    simulateHumanClick(btn);
+                    return;
+                }
+
+                // 2. 通用“确定/我知道了/继续”（精确匹配），严格排除单独的“提示”，只匹配明确的学习超时/防挂机/继续观看内容
+                if (/^(确定|我知道了|知道了|继续)$/.test(btnText)) {
+                    const isLearningNotice = /长时间未操作|学习超时|超时未操作|继续学习|继续观看|挂机检测|防挂机|学时累计|学时记录|是否继续学习/i.test(dialogText);
+                    if (isLearningNotice) {
+                        console.log("【神奇海螺】检测到学习超时/挂机提醒弹窗，点击确认:", btnText);
+                        simulateHumanClick(btn);
+                        return;
+                    }
+                }
+            }
+
+            // 3. 考试/测验邀请或提醒弹窗：用户要求看完视频不参加考试，直接关闭/取消
+            if (/考试|测验|测试/.test(dialogText)) {
+                const cancelBtn = buttons.find(b => /^(取消|关闭|稍后|稍后再说|暂不|我知道了)$/.test((b.innerText || '').trim()));
+                if (cancelBtn) {
+                    console.log("【神奇海螺】检测到考试邀请/提醒弹窗，根据配置自动跳过/关闭:", cancelBtn.innerText.trim());
+                    simulateHumanClick(cancelBtn);
+                    return;
+                }
+                const closeIcon = dialog.querySelector('.ant5-modal-close, .ant-modal-close, [aria-label="Close"], [aria-label="关闭"]');
+                if (closeIcon && closeIcon.offsetParent !== null) {
+                    console.log("【神奇海螺】检测到考试邀请/提醒弹窗，点击右上角关闭按钮");
+                    simulateHumanClick(closeIcon);
+                    return;
+                }
+            }
+        }
+    }
+
+    function formatTime(seconds) {
+        if (!seconds || isNaN(seconds) || !isFinite(seconds)) return "00:00";
+        const total = Math.floor(seconds);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        if (h > 0) {
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    // ==========================================
+    // 3. 通用 DOM 检查工具函数 (兼容多种目录结构与已学标记)
+    // ==========================================
+
+    // 检查某个元素是否代表“已完成”状态（绿色对勾、100%、已完成文本）
+    function isItemCompleted(el) {
+        if (!el) return false;
+        const hasQuery = typeof el.querySelector === 'function';
+        // 1. 检查是否有 check 对勾图标 (anticon5-check, data-icon="check", aria-label="check")
+        const hasCheckIcon = hasQuery && el.querySelector('[data-icon="check"], [aria-label="check"], .anticon5-check, .anticon-check, [class*="anticon-check"], [class*="anticon5-check"]') !== null;
+        // 2. 检查是否有成功的绿色图标路径或 check 图标
+        const hasGreenCheck = hasQuery && el.querySelector('svg path[fill="#52c41a"], svg path[fill="#00B96B"], svg path[fill="#1677ff"]') !== null;
+        // 3. 检查是否有已完成/100% 文本
+        const text = el.innerText || '';
+        const hasFinishedText = text.includes('已完成') || text.includes('100%');
+
+        return hasCheckIcon || hasGreenCheck || hasFinishedText;
+    }
+
+    // 检查子视频小节是否处于当前选中/播放激活状态
+    function isSubVideoActive(el) {
+        if (!el) return false;
+        const cls = el.className || '';
+        if (cls.includes('bg6') || cls.includes('text-primary') || cls.includes('active')) return true;
+        const titleEl = el.querySelector('[title], .truncate');
+        if (titleEl && (titleEl.className || '').includes('text-primary')) return true;
+        return false;
+    }
+
+    // 自动展开所有未展开的章节折叠面板（兼容 AntD 4 / 5）
+    function ensureAllChaptersExpanded() {
+        const headers = Array.from(document.querySelectorAll('.ant5-collapse-header[aria-expanded="false"], .ant-collapse-header[aria-expanded="false"], [class*="collapse-header"][aria-expanded="false"]'));
+        if (headers.length > 0) {
+            console.log(`【神奇海螺】发现 ${headers.length} 个折叠章节，正在自动展开...`);
+            headers.forEach(h => simulateHumanClick(h));
+        }
+    }
+
+    // 获取当前页面中所有的子小节条目（兼容一层目录与多层折叠目录）
+    function getAllSubVideoItems() {
+        // 先确保所有章节展开
+        ensureAllChaptersExpanded();
+
+        // 匹配所有具有 cursor-pointer 且包含时长格式 (如 00:07:45 或 03:37) 的条目
+        const items = Array.from(document.querySelectorAll('div.group.cursor-pointer, [class*="min-h-10"][class*="cursor-pointer"]'))
+            .filter(el => {
+                const t = el.innerText || '';
+                // 排除顶层菜单项，只保留包含时间或明确小节标识的条目
+                return /\d{1,2}:\d{2}/.test(t) && !t.includes('学时') && !t.includes('个活动');
+            });
+
+        return items;
+    }
+
+    // 解析时分秒字符串为纯秒数 (例如 "00:14:57" -> 897, "12:46" -> 766)
+    function parseTimeToSeconds(timeStr) {
+        if (!timeStr) return 0;
+        const parts = timeStr.trim().split(':').map(Number);
+        if (parts.length === 3) {
+            return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+        }
+        if (parts.length === 2) {
+            return (parts[0] || 0) * 60 + (parts[1] || 0);
+        }
+        return 0;
+    }
+
+    // 计算当前大课程的总时长、已学时长、小节数完成比与总百分比
+    function calculateCourseTotalProgress(allSubItems, video) {
+        let totalSec = 0;
+        let completedSec = 0;
+        let completedCount = 0;
+        const totalCount = allSubItems.length;
+
+        allSubItems.forEach(el => {
+            const tm = (el.innerText || '').match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+            const itemSec = tm ? parseTimeToSeconds(tm[1]) : 0;
+            totalSec += itemSec;
+            const isDone = isItemCompleted(el);
+            const isActive = isSubVideoActive(el);
+
+            if (isDone) {
+                completedSec += itemSec;
+                completedCount++;
+            } else if (isActive && video && video.duration > 0) {
+                const curPlay = Math.min(itemSec > 0 ? itemSec : video.currentTime, video.currentTime);
+                completedSec += curPlay;
+            }
+        });
+
+        const percent = totalSec > 0 ? Math.min(100, Math.floor((completedSec / totalSec) * 100)) : (totalCount > 0 && completedCount === totalCount ? 100 : 0);
+        const countStr = `${completedCount}/${totalCount} 节`;
+        const timeStr = `${formatTime(completedSec)} / ${formatTime(totalSec)}`;
+        return {
+            text: `${countStr} · ${timeStr} (${percent}%)`,
+            percent: percent,
+            completedCount,
+            totalCount,
+            completedSec,
+            totalSec
+        };
+    }
+
+    // 检查当前课程是否包含随堂测验/课后考试/测试节点
+    function detectCourseExam() {
+        const candidates = Array.from(document.querySelectorAll(
+            'div.group.cursor-pointer, [class*="min-h-10"][class*="cursor-pointer"], .ant5-tabs-tab, .ant-tabs-tab, [role="tab"], li, button, span, div'
+        )).filter(el => {
+            if (el && el.closest && (el.closest('#jinpei-hud') || el.closest('#_kme_tool_host'))) return false;
+            const t = (el.innerText || '').trim();
+            return /^(课后考试|随堂测验|结业考试|课程考试|综合测试|在线考试|随堂考试|作业与考试|单元测验|去考试)$/.test(t) ||
+                   (/(考试|测验|随堂测)/.test(t) && t.length <= 12 && !t.includes('调试'));
+        });
+        return candidates.length > 0;
+    }
+
+    // 当前地图/培训项目 ID 提取
+    function getCurrentMapId() {
+        const path = (location && (location.pathname || location.href)) || "";
+        const m = path.match(/\/(?:study|detail)\/(\d+)/);
+        if (m) return m[1];
+        const cp = path.match(/\/courseplay\/(\d+)/);
+        if (cp) return `courseplay_${cp[1]}`;
+        return "";
+    }
+
+    // 当前地图标题提取（优先使用保存的任务标题，兜底页面标题）
+    function getMapTitleFromPage() {
+        if (state.currentTask) return state.currentTask;
+        const candidates = Array.from(document.querySelectorAll('h1, h2, h3, .main div, [class*="title"]'))
+            .map(el => (el.innerText || '').trim())
+            .filter(t => t.includes('学习地图') || (t.includes('培训') && t.length < 50));
+        if (candidates.length > 0) return candidates[0].split('\n')[0].trim();
+        return "";
+    }
+
+    // 从任务卡片提取 Task ID
+    function getTaskIdFromCard(card) {
+        if (!card) return "";
+        const id = (typeof card.getAttribute === 'function' ? (card.getAttribute('data-id') || card.getAttribute('id')) : null) || (card.dataset && card.dataset.id);
+        if (id) return id;
+        const link = typeof card.querySelector === 'function' ? card.querySelector('a[href*="/training/"]') : null;
+        if (link) {
+            const m = link.href.match(/\/training\/(?:detail|study)\/(\d+)/);
+            if (m) return m[1];
+        }
+        return "";
+    }
+
+    // 从课程条目提取唯一标识（优先 ID，兜底标题）
+    function getCourseKeyFromItem(c) {
+        if (!c) return "";
+        const id = (typeof c.getAttribute === 'function' ? (c.getAttribute('data-id') || c.getAttribute('data-course-id') || c.getAttribute('id')) : null) || (c.dataset && (c.dataset.id || c.dataset.courseId));
+        if (id) return id;
+        const link = typeof c.querySelector === 'function' ? c.querySelector('a[href*="/course/"], a[href*="/courseplay/"]') : null;
+        if (link) {
+            const lm = link.href.match(/\/(?:course|courseplay)\/(\d+)/);
+            if (lm) return lm[1];
+        }
+        return (c.innerText || '').split('\n')[0].trim();
+    }
+
+    // [P1 修复] 按“地图 ID + 课程标识”作用域记录已处理课程，防止不同地图同名课程被误跳过（同时同步 localStorage 支持跨标签并发）
+    function getHandledCourses() {
+        try {
+            const local = JSON.parse(getLocalItem(STORAGE_KEYS.handledCourses, '[]')) || [];
+            const session = JSON.parse(getStorageItem(STORAGE_KEYS.handledCourses, 'jinpei_handled_courses') || '[]') || [];
+            return Array.from(new Set([...local, ...session]));
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function markCourseHandled(arg1, arg2) {
+        let mapId, courseKey;
+        if (arg2 === undefined) {
+            mapId = getCurrentMapId() || 'global';
+            courseKey = arg1;
+        } else {
+            mapId = arg1 || getCurrentMapId() || 'global';
+            courseKey = arg2;
+        }
+        if (!courseKey) return;
+        const list = getHandledCourses();
+        const scopedKey = `${mapId}::${courseKey}`;
+        if (!list.includes(scopedKey)) {
+            list.push(scopedKey);
+            const str = JSON.stringify(list);
+            setStorageItem(STORAGE_KEYS.handledCourses, str);
+            setLocalItem(STORAGE_KEYS.handledCourses, str);
+        }
+    }
+
+    function isCourseHandled(arg1, arg2) {
+        let mapId, courseKey;
+        if (arg2 === undefined) {
+            mapId = getCurrentMapId() || 'global';
+            courseKey = arg1;
+        } else {
+            mapId = arg1 || getCurrentMapId() || 'global';
+            courseKey = arg2;
+        }
+        if (!courseKey) return false;
+        const list = getHandledCourses();
+        return list.includes(`${mapId}::${courseKey}`);
+    }
+
+    // [P2 修复] 已学完视频/跳过考试的学习地图记录管理器（防止任务中心未打勾导致死循环重复进入）
+    function getHandledMaps() {
+        try {
+            const local = JSON.parse(getLocalItem(STORAGE_KEYS.handledMaps, '[]')) || [];
+            const session = JSON.parse(getStorageItem(STORAGE_KEYS.handledMaps, 'jinpei_handled_maps') || '[]') || [];
+            return Array.from(new Set([...local, ...session]));
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function markMapHandled(mapKey) {
+        if (!mapKey) return;
+        const list = getHandledMaps();
+        if (!list.includes(mapKey)) {
+            list.push(mapKey);
+            const str = JSON.stringify(list);
+            setStorageItem(STORAGE_KEYS.handledMaps, str);
+            setLocalItem(STORAGE_KEYS.handledMaps, str);
+        }
+    }
+
+    // 提取当前课程标题（从全局状态、页面面包屑、头部或标题中提取）
+    function getCurrentCourseTitle() {
+        if (state.currentCourse) return state.currentCourse;
+        const breadcrumbEl = document.querySelector('.ant5-breadcrumb, .ant-breadcrumb, [class*="breadcrumb"]');
+        if (breadcrumbEl) {
+            const parts = Array.from(breadcrumbEl.querySelectorAll('li, span, a'))
+                .map(el => (el.innerText || '').trim())
+                .filter(t => t && !/^(首页|我的任务|培训|学习地图)$/.test(t));
+            if (parts.length > 0) return parts[parts.length - 1];
+        }
+        const titleEl = document.querySelector('h1, h2, [class*="courseTitle"], [class*="course-title"], [class*="headerTitle"]');
+        if (titleEl) {
+            const t = (titleEl.innerText || '').trim();
+            if (t && t.length < 60) return t;
+        }
+        if (document.title && !document.title.includes('江南金融') && !document.title.includes('登录')) {
+            return document.title.split('-')[0].trim();
+        }
+        return "";
+    }
+
+    // 提取当前课程在 URL 中的 ID
+    function getCurrentCourseId() {
+        const path = (location && (location.pathname || location.href)) || "";
+        const m = path.match(/\/(?:study|courseplay)\/(\d+)/);
+        return m ? m[1] : "";
+    }
+
+    // ==========================================
+    // 3.1 看门狗服务 (Watchdog: 进度卡死检测、自动刷新、异常小节跳过与终极暂停保护)
+    // ==========================================
+    function getSubVideoTitle(el) {
+        if (!el) return "";
+        const titleEl = typeof el.querySelector === 'function' ? el.querySelector('[title], .truncate') : null;
+        if (titleEl && titleEl.title) return titleEl.title.trim();
+        if (titleEl && titleEl.innerText) return titleEl.innerText.trim();
+        return (el.innerText || '').split('\n')[0].trim();
+    }
+
+    function getSubVideoKey(el) {
+        if (!el) return "";
+        const mapId = getCurrentMapId() || 'global';
+        const courseTitle = getCurrentCourseTitle() || 'unknown';
+        const subTitle = getSubVideoTitle(el);
+        return `${mapId}::${courseTitle}::${subTitle}`;
+    }
+
+    function getFailedSubVideos() {
+        try {
+            return JSON.parse(getStorageItem(STORAGE_KEYS.failedVideos)) || [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function markSubVideoFailed(subKey) {
+        if (!subKey) return;
+        const list = getFailedSubVideos();
+        if (!list.includes(subKey)) {
+            list.push(subKey);
+            setStorageItem(STORAGE_KEYS.failedVideos, JSON.stringify(list));
+        }
+    }
+
+    function isSubVideoFailed(subKey) {
+        if (!subKey) return false;
+        const list = getFailedSubVideos();
+        return list.includes(subKey);
+    }
+
+    let completionReplayGeneration = 0;
+    let completionReplayMemory = null;
+
+    function getCompletionReplayState() {
+        if (completionReplayMemory) return completionReplayMemory;
+        try {
+            const value = JSON.parse(getStorageItem(STORAGE_KEYS.completionReplay));
+            if (value && typeof value.subVideoKey === 'string' && Number.isInteger(value.attempts) && value.attempts >= 0) return value;
+        } catch (_) {}
+        return { subVideoKey: '', attempts: 0 };
+    }
+
+    function clearCompletedReplay(subEl) {
+        if (subEl && isItemCompleted(subEl) && getCompletionReplayState().subVideoKey === getSubVideoKey(subEl)) {
+            completionReplayGeneration++;
+            completionReplayMemory = null;
+            removeStorageItem(STORAGE_KEYS.completionReplay);
+        }
+    }
+
+    function replayVideoTail(subEl) {
+        const subVideoKey = getSubVideoKey(subEl);
+        const title = getSubVideoTitle(subEl);
+        const previous = getCompletionReplayState();
+        const attempts = previous.subVideoKey === subVideoKey ? previous.attempts : 0;
+        if (attempts >= CONFIG.maxCompletionReplays) {
+            pauseAutomation(`「${title}」重播 ${CONFIG.maxCompletionReplays} 次后仍未打勾，已暂停；请检查网络和学习记录。`);
+            return;
+        }
+        const video = document.querySelector('video');
+        if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+            pauseAutomation(`「${title}」无法获取视频时长，无法回退重播，已暂停。`);
+            return;
+        }
+        const targetTime = Math.max(0, video.duration - CONFIG.completionReplaySeconds);
+        const generation = ++completionReplayGeneration;
+        const sourceUrl = location.href;
+        const stillCurrent = () => state.enabled && generation === completionReplayGeneration &&
+            location.href === sourceUrl && document.querySelector('video') === video;
+        const startedAt = Date.now();
+        let playAttempts = 0;
+        let requestId = 0;
+        let settled = false;
+        let seekConfirmed = false;
+        let lastError = '';
+        const isPending = () => {
+            if (settled) return false;
+            if (stillCurrent()) return true;
+            // 路由或播放器被用户切换后，旧恢复任务退出并释放自己的锁。
+            if (state.enabled && generation === completionReplayGeneration) {
+                settled = true;
+                state.isSwitching = false;
+                state.isActionPending = false;
+            }
+            return false;
+        };
+        const fail = (reason) => {
+            if (!isPending()) return;
+            settled = true;
+            console.error(`【神奇海螺】重播恢复失败: ${reason}`, {
+                currentTime: video.currentTime, targetTime, seeking: video.seeking,
+                readyState: video.readyState, paused: video.paused, playAttempts,
+            });
+            pauseAutomation(`「${title}」${reason}，已暂停；请检查播放器和网络。`);
+        };
+        const finish = () => {
+            if (!isPending()) return;
+            settled = true;
+            state.isSwitching = false;
+            state.isActionPending = false;
+            watchdogRuntime.lastCurrentTime = video.currentTime;
+            watchdogRuntime.initialProgressTime = video.currentTime;
+            watchdogRuntime.lastProgressTimestamp = Date.now();
+            updateHUD(`「${title}」已恢复重播 (${attempts + 1}/${CONFIG.maxCompletionReplays})...`);
+        };
+        const retry = (error, id) => {
+            if (!isPending() || id !== requestId) return;
+            requestId++; // 忽略被中断的旧播放请求及其迟到回调
+            lastError = `${error?.name || 'Error'}: ${error?.message || String(error)}`;
+            console.warn(`【神奇海螺】重播播放请求失败 (${playAttempts}/${CONFIG.replayPlayMaxAttempts}): ${lastError}`);
+            if (playAttempts >= CONFIG.replayPlayMaxAttempts) {
+                fail(`重播启动连续失败 ${playAttempts} 次 (${lastError})`);
+                return;
+            }
+            updateHUD(`「${title}」等待播放器恢复，准备重试播放 (${playAttempts}/${CONFIG.replayPlayMaxAttempts})...`);
+            setManagedTimeout(waitAndPlay, 1000);
+        };
+        const waitAndPlay = () => {
+            if (!isPending()) return;
+            if (Date.now() - startedAt >= CONFIG.replayStartTimeout) {
+                fail(`回退后恢复播放超时${lastError ? ` (${lastError})` : ''}`);
+                return;
+            }
+            if (isItemCompleted(subEl)) {
+                settled = true;
+                clearCompletedReplay(subEl);
+                state.isSwitching = false;
+                state.isActionPending = false;
+                switchToNextSubVideoOrCourse();
+                return;
+            }
+            // currentTime 已赋值不代表跳转完成，还需等待 seek 与缓冲就绪。
+            if (!video.seeking && Math.abs(video.currentTime - targetTime) <= 1) seekConfirmed = true;
+            if (!seekConfirmed || video.seeking || (typeof video.readyState === 'number' && video.readyState < 2)) {
+                setManagedTimeout(waitAndPlay, 500);
+                return;
+            }
+            playAttempts++;
+            const id = ++requestId;
+            try {
+                Promise.resolve(video.play()).then(() => {
+                    if (!isPending() || id !== requestId) return;
+                    if (video.paused || video.seeking) {
+                        retry(new Error('播放器尚未进入播放状态'), id);
+                    } else {
+                        finish();
+                    }
+                }, error => retry(error, id));
+                // play() 可能一直不返回结果，不能无限等待。
+                setManagedTimeout(() => retry(new Error('播放请求等待超时'), id), 4000);
+            } catch (error) {
+                retry(error, id);
+            }
+        };
+        try {
+            // 以总时长为基准，兼容播放器结束后把 currentTime 重置为 0 的情况。
+            video.currentTime = targetTime;
+            completionReplayMemory = { subVideoKey, attempts: attempts + 1 };
+            setStorageItem(STORAGE_KEYS.completionReplay, JSON.stringify(completionReplayMemory));
+            state.syncRetryCount = 0;
+            state.isSwitching = true;
+            state.isActionPending = true;
+            watchdogRuntime.subVideoKey = subVideoKey;
+            watchdogRuntime.lastCurrentTime = targetTime;
+            watchdogRuntime.initialProgressTime = targetTime;
+            watchdogRuntime.lastProgressTimestamp = Date.now();
+            const message = `「${title}」尚未打勾，重播末尾 ${Math.min(video.duration, CONFIG.completionReplaySeconds)} 秒 (${attempts + 1}/${CONFIG.maxCompletionReplays})...`;
+            console.warn(`【神奇海螺】${message}`);
+            updateHUD(message);
+            setManagedTimeout(waitAndPlay, 500);
+        } catch (error) {
+            fail(`回退重播失败 (${error?.name || 'Error'}: ${error?.message || String(error)})`);
+        }
+    }
+
+    function getWatchdogState() {
+        try {
+            return JSON.parse(getStorageItem(STORAGE_KEYS.watchdog)) || {
+                subVideoKey: "",
+                reloadCount: 0,
+                consecutiveFails: 0
+            };
+        } catch (_) {
+            return { subVideoKey: "", reloadCount: 0, consecutiveFails: 0 };
+        }
+    }
+
+    function setWatchdogState(wd) {
+        setStorageItem(STORAGE_KEYS.watchdog, JSON.stringify(wd));
+    }
+
+    function clearWatchdogState() {
+        removeStorageItem(STORAGE_KEYS.watchdog);
+    }
+
+    const watchdogRuntime = {
+        subVideoKey: "",
+        lastCurrentTime: -1,
+        lastProgressTimestamp: -1,
+        initialProgressTime: -1,
+    };
+
+    function checkWatchdog(video, activeSubEl, allSubItems) {
+        if (!state.enabled || state.isSwitching || state.isActionPending) return;
+        if (!video) return;
+
+        // 视频播放完成判定中或已结束，不触发卡顿看门狗
+        if (video.ended || (video.duration > 0 && video.currentTime >= video.duration - 1)) {
+            return;
+        }
+
+        const activeSub = activeSubEl || (allSubItems && allSubItems.length > 0 ? allSubItems.find(isSubVideoActive) || allSubItems[0] : null);
+        const subKey = getSubVideoKey(activeSub);
+        if (!subKey) return;
+
+        const wd = getWatchdogState();
+
+        // 1. 如果换到了不同的小节，重置当前小节的刷新计数
+        if (wd.subVideoKey !== subKey) {
+            wd.subVideoKey = subKey;
+            wd.reloadCount = 0;
+            setWatchdogState(wd);
+
+            watchdogRuntime.subVideoKey = subKey;
+            watchdogRuntime.lastCurrentTime = video.currentTime;
+            watchdogRuntime.lastProgressTimestamp = Date.now();
+            watchdogRuntime.initialProgressTime = video.currentTime;
+            return;
+        }
+
+        if (watchdogRuntime.subVideoKey !== subKey || watchdogRuntime.lastProgressTimestamp < 0) {
+            watchdogRuntime.subVideoKey = subKey;
+            watchdogRuntime.lastCurrentTime = video.currentTime;
+            watchdogRuntime.lastProgressTimestamp = Date.now();
+            watchdogRuntime.initialProgressTime = video.currentTime;
+        }
+
+        // 2. 检查播放进度推进
+        const timeDiff = Math.abs(video.currentTime - watchdogRuntime.lastCurrentTime);
+        if (timeDiff >= 0.5) {
+            // 进度在正常前进！
+            watchdogRuntime.lastCurrentTime = video.currentTime;
+            watchdogRuntime.lastProgressTimestamp = Date.now();
+
+            // 若从进入起向前正常推进超过 3 秒，确信视频已成功播放，清除当前小节刷新计数和连续失败计数
+            if (Math.abs(video.currentTime - watchdogRuntime.initialProgressTime) >= 3) {
+                if (wd.reloadCount > 0 || wd.consecutiveFails > 0) {
+                    console.log("【神奇海螺·看门狗】视频恢复正常稳定播放，清除看门狗异常计数。");
+                    wd.reloadCount = 0;
+                    wd.consecutiveFails = 0;
+                    setWatchdogState(wd);
+                }
+            }
+            return;
+        }
+
+        // 3. 进度未前进，计算卡住停滞时间
+        const stallTime = Date.now() - watchdogRuntime.lastProgressTimestamp;
+        if (stallTime >= CONFIG.watchdogStallTimeout) {
+            const replay = getCompletionReplayState();
+            if (replay.subVideoKey === subKey && replay.attempts > 0) {
+                pauseAutomation(`「${getSubVideoTitle(activeSub)}」重播期间播放停滞，已暂停；请检查播放器和网络。`);
+                return;
+            }
+            console.warn(`【神奇海螺·看门狗】检测到视频进度停滞超过 ${Math.round(stallTime / 1000)} 秒 (阈值: ${CONFIG.watchdogStallTimeout / 1000}s)！`);
+
+            // 规则 1: 如果还未超过 5 次重试，自动刷新网页
+            if (wd.reloadCount < CONFIG.watchdogMaxReloads) {
+                wd.reloadCount++;
+                setWatchdogState(wd);
+                const reloadMsg = `⚠️ 视频进度卡住超过 30 秒，看门狗自动刷新页面（第 ${wd.reloadCount}/${CONFIG.watchdogMaxReloads} 次）...`;
+                updateHUD(reloadMsg);
+                console.warn(`【神奇海螺·看门狗】${reloadMsg}`);
+                if (typeof location !== 'undefined' && typeof location.reload === 'function') {
+                    location.reload();
+                }
+                return;
+            }
+
+            // 规则 2: 超过 5 次还没能恢复，跳过当前这一节课
+            wd.consecutiveFails++;
+            wd.reloadCount = 0;
+            markSubVideoFailed(subKey);
+            setWatchdogState(wd);
+
+            // 规则 3: 连续 3 节课都加载不出来，自动暂停学习
+            if (wd.consecutiveFails >= CONFIG.watchdogMaxConsecutiveFails) {
+                console.error(`【神奇海螺·看门狗】连续 ${wd.consecutiveFails} 节视频加载失败，触发终极暂停保护！`);
+                clearWatchdogState();
+                pauseAutomation(`⚠️ 连续 ${CONFIG.watchdogMaxConsecutiveFails} 节课均无法正常加载播放，看门狗已自动暂停学习！请检查网络连接或课件。`);
+                return;
+            }
+
+            const skipMsg = `⚠️ 当前小节连续 ${CONFIG.watchdogMaxReloads} 次刷新仍无法恢复播放，看门狗自动跳过并切换下一节（连续失败 ${wd.consecutiveFails}/${CONFIG.watchdogMaxConsecutiveFails} 节）...`;
+            updateHUD(skipMsg);
+            console.warn(`【神奇海螺·看门狗】${skipMsg}`);
+            watchdogRuntime.lastProgressTimestamp = Date.now();
+            state.isSwitching = true;
+            setManagedTimeout(() => {
+                switchToNextSubVideoOrCourse();
+            }, 1000);
+        }
+    }
+
+    // ==========================================
+    // 4. 核心业务流程
+    // ==========================================
+
+    // 流程 A: 登录状态检测与重定向
+    function handleLoginAndIndex() {
+        const url = location.href;
+        if (url.includes('/home/login')) {
+            updateHUD("等待用户登录账号...");
+            return;
+        }
+
+        if (url.includes('/home/index') || url.includes('/home/portal')) {
+            const hasToken = localStorage.getItem('_l_KPLiPs') || document.cookie.includes('_c_WBKFRo');
+            const hasUserArea = document.querySelector('.header__b48WI, .user, [class*="user"], [class*="avatar"]');
+
+            if (hasToken || hasUserArea) {
+                if (state.isActionPending) return;
+                state.isActionPending = true;
+                updateHUD("检测到已登录，正在跳转任务中心...");
+                setManagedTimeout(() => {
+                    location.href = CONFIG.myTaskUrl;
+                }, 1500);
+            } else {
+                updateHUD("请先完成登录...");
+            }
+        }
+    }
+
+    // 流程 B: 任务页 (myTask) 检查与自动进入
+    function handleMyTaskPage() {
+        if (state.isActionPending) return;
+        updateHUD("正在检查我的任务列表...");
+
+        const cards = Array.from(document.querySelectorAll('div.group.cursor-pointer, .grid > div'))
+            .filter(c => {
+                const text = c.innerText || '';
+                return (text.includes('学习地图') || text.includes('进行中') || text.includes('截止')) && c.offsetParent !== null;
+            });
+
+        if (cards.length === 0) {
+            updateHUD("等待任务列表加载...");
+            return;
+        }
+
+        const handledMaps = getHandledMaps();
+
+        // 寻找第一个未完成且未被跳过处理的任务（防止跳过考试后因“进行中”死循环重入）
+        let targetCard = null;
+        for (const card of cards) {
+            const title = (card.innerText.split('\n')[0] || '').trim();
+            const id = getTaskIdFromCard(card);
+            const isHandled = (id && handledMaps.includes(id)) || (title && handledMaps.includes(title));
+            if (!isItemCompleted(card) && !isHandled) {
+                targetCard = card;
+                break;
+            }
+        }
+
+        if (targetCard) {
+            state.isActionPending = true;
+            const title = (targetCard.innerText.split('\n')[0] || '学习任务').trim();
+            state.currentTask = title;
+            updateHUD(`进入任务: ${title}`, title);
+            console.log("【神奇海螺】找到未完成任务，正在点击进入:", title);
+            setManagedTimeout(() => {
+                simulateHumanClick(targetCard);
+                setManagedTimeout(() => {
+                    state.isActionPending = false;
+                }, 3000);
+            }, 1000);
+        } else {
+            pauseAutomation("🎉 列表中的所有学习地图均已学完（已跳过包含考试的地图）！");
+        }
+    }
+
+    // 流程 C: 任务详情页 (training/detail)
+    function handleDetailPage() {
+        if (state.isActionPending) return;
+        updateHUD("任务详情页，正在寻找学习入口...");
+
+        const enterBtn = Array.from(document.querySelectorAll('button, .ant5-btn, [role="button"]'))
+            .find(b => {
+                const text = (b.innerText || '').trim();
+                return /进入学习|继续学习|去学习/.test(text) && b.offsetParent !== null;
+            });
+
+        if (enterBtn) {
+            state.isActionPending = true;
+            updateHUD("点击进入学习目录...");
+            setManagedTimeout(() => {
+                simulateHumanClick(enterBtn);
+                setManagedTimeout(() => {
+                    state.isActionPending = false;
+                }, 3000);
+            }, 1200);
+        }
+    }
+
+    function getCourseItems() {
+        return Array.from(document.querySelectorAll('[class*="panelContent"], .course-wrap [class*="item"], div[class*="cursor-pointer"]'))
+            .filter(el => {
+                const text = el.innerText || '';
+                return /(课程|学时|课时|学分|分钟|\d+%|必修|选修)/.test(text) && el.children.length <= 12 && text.length < 300 && el.offsetParent !== null;
+            });
+    }
+
+    // 返回目录后按实际路由和目录内容解锁；超时暂停，不重复点击。
+    function waitForCourseCatalog(sourceUrl, startedAt) {
+        if (!state.enabled) return;
+        if (location.href !== sourceUrl || (!document.querySelector('video') && getCourseItems().length > 0)) {
+            state.isSwitching = false;
+            state.isActionPending = false;
+            state.syncRetryCount = 0;
+            return;
+        }
+        if (Date.now() - startedAt >= CONFIG.catalogWaitTimeout) {
+            pauseAutomation("返回学习目录超时，已暂停；请检查页面后重新开始。");
+            console.warn("【神奇海螺】返回学习目录超时，已暂停自动学习，避免重复点击。");
+            return;
+        }
+        setManagedTimeout(() => waitForCourseCatalog(sourceUrl, startedAt), 500);
+    }
+
+    // 流程 D: 学习与播放页 (training/study)
+    function handleStudyPage() {
+        const video = document.querySelector('video');
+
+        // 情况 1: 页面正在展示课程大目录（中间主区域未打开视频播放器）
+        if (!video) {
+            if (state.isActionPending) return;
+            // 已退回或处于课程大目录，重置视频切课状态
+            state.isSwitching = false;
+            updateHUD("正在分析课程目录...");
+
+            // 提取所有大课程条目（兼容 panelContent 及其它变体）
+            const courseItems = getCourseItems();
+
+            if (courseItems.length > 0) {
+                const mapId = getCurrentMapId();
+                const concurrency = getConcurrencySetting();
+                state.concurrency = concurrency;
+                const activeTabs = getActiveTabs();
+                const activeTabsCount = Math.max(1, Object.keys(activeTabs).length);
+
+                // 统计地图所有课程的总进度
+                let completedCount = 0;
+                const totalCount = courseItems.length;
+                for (const c of courseItems) {
+                    const cKey = getCourseKeyFromItem(c);
+                    const cName = (c.innerText || '').split('\n')[0].trim();
+                    if (isItemCompleted(c) || isCourseHandled(mapId, cKey) || isCourseHandled(mapId, cName)) {
+                        completedCount++;
+                    }
+                }
+                const pct = totalCount > 0 ? Math.floor((completedCount / totalCount) * 100) : 0;
+                const allCoursesProg = `${completedCount} / ${totalCount} 门 (${pct}%)`;
+                setStorageItem(STORAGE_KEYS.mapProgress, allCoursesProg);
+
+                // 如果所有课程全部完成
+                if (completedCount === totalCount) {
+                    state.isActionPending = true;
+                    updateHUD("🎉 本地图所有课程已全部学完！返回任务中心...", undefined, undefined, undefined, undefined, allCoursesProg);
+                    // 标记当前地图为已处理（即使包含跳过的考试，防止回任务页又反复进入该地图）
+                    if (mapId) markMapHandled(mapId);
+                    if (state.currentTask) markMapHandled(state.currentTask);
+                    const mapTitle = getMapTitleFromPage();
+                    if (mapTitle) markMapHandled(mapTitle);
+
+                    unregisterTab();
+
+                    // 如果当前窗口是由主窗口弹出的并发子窗口，学完后自动关闭本窗口释放资源
+                    if (typeof window !== 'undefined' && window.opener && window.opener !== window) {
+                        console.log("【神奇海螺】并发子窗口已学完全部课程，自动关闭窗口释放资源...");
+                        setManagedTimeout(() => {
+                            try {
+                                window.close();
+                            } catch (_) {
+                                location.href = CONFIG.myTaskUrl;
+                            }
+                        }, 2000);
+                        return;
+                    }
+
+                    setManagedTimeout(() => {
+                        location.href = CONFIG.myTaskUrl;
+                    }, 2000);
+                    return;
+                }
+
+                // 过滤出未完成且未被记录跳过的大课
+                const uncompletedCourses = courseItems.filter(c => {
+                    const cKey = getCourseKeyFromItem(c);
+                    const cName = (c.innerText || '').split('\n')[0].trim();
+                    return !isItemCompleted(c) && !isCourseHandled(mapId, cKey) && !isCourseHandled(mapId, cName);
+                });
+
+                // 寻找第一个未被其他活跃窗口占用的课程
+                let targetCourse = null;
+                for (const c of uncompletedCourses) {
+                    const cKey = getCourseKeyFromItem(c);
+                    const cName = (c.innerText || '').split('\n')[0].trim();
+                    if (!isCourseBusyByOtherTab(cKey, cName, mapId)) {
+                        if (tryClaimCourseSlot(cKey, cName, mapId)) {
+                            targetCourse = c;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetCourse) {
+                    // 若开启了多路并发，且当前活跃标签数少于目标并发数，且还有更多未开工的课程，尝试唤起新的并发窗口
+                    const availableRemaining = uncompletedCourses.filter(c => {
+                        const cKey = getCourseKeyFromItem(c);
+                        const cName = (c.innerText || '').split('\n')[0].trim();
+                        return c !== targetCourse && !isCourseBusyByOtherTab(cKey, cName, mapId);
+                    });
+
+                    if (concurrency > 1 && activeTabsCount < concurrency && availableRemaining.length > 0) {
+                        if (!state.lastTabSpawnTime || Date.now() - state.lastTabSpawnTime > 4000) {
+                            state.lastTabSpawnTime = Date.now();
+                            try {
+                                if (typeof window !== 'undefined' && typeof window.open === 'function') {
+                                    const newWin = window.open(location.href, '_blank');
+                                    if (newWin) {
+                                        console.log(`【神奇海螺】当前已开启 ${activeTabsCount + 1}/${concurrency} 路并发学习！`);
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn("【神奇海螺】自动弹窗受阻，请允许弹窗或手动多开:", e);
+                            }
+                        }
+                    }
+
+                    state.isActionPending = true;
+                    const cName = (targetCourse.innerText || '').split('\n')[0].trim();
+                    const cKey = getCourseKeyFromItem(targetCourse);
+                    state.currentCourse = cName;
+                    updateHUD(`进入未完成课程: ${cName}`, undefined, undefined, undefined, cName, allCoursesProg);
+                    console.log("【神奇海螺】正在进入未完成大课:", cName);
+                    setManagedTimeout(() => {
+                        simulateHumanClick(targetCourse);
+                        setManagedTimeout(() => {
+                            state.isActionPending = false;
+                        }, 3000);
+                    }, 1000);
+                } else {
+                    // 没有找到可用课程，但地图尚未全部学完：说明剩余未完成课程正由其他并发窗口正在学习中
+                    registerTabHeartbeat("", "等待并发窗口完成中...", mapId);
+                    updateHUD(`⏳ 剩余课程正由其他窗口并发学习中 (${activeTabsCount} 路并发)，本窗口候选中...`, undefined, undefined, undefined, undefined, allCoursesProg);
+                }
+            }
+            return;
+        }
+
+        // 情况 2: 页面已处于视频播放状态
+        handleVideoPlayback(video);
+    }
+
+    // 流程 E: 视频播放管理、跳过已学视频与自动连播
+    function handleVideoPlayback(video) {
+        // 1. 静音与速率
+        if (CONFIG.autoMute && !video.muted) {
+            video.muted = true;
+        }
+        if (video.playbackRate !== CONFIG.playbackRate) {
+            video.playbackRate = CONFIG.playbackRate;
+        }
+
+        // 2. 获取所有子视频条目
+        const allSubItems = getAllSubVideoItems();
+
+        // 计算当前大课程的总进度、总时长与百分比
+        const courseProg = calculateCourseTotalProgress(allSubItems, video);
+
+        // 提取全部课程进度 (从 sessionStorage 恢复)
+        const allCoursesProg = getStorageItem(STORAGE_KEYS.mapProgress, 'jinpei_map_progress') || state.allCoursesProgress || "";
+
+        // 提取课程名称
+        if (!state.currentCourse) {
+            const detectedCourse = getCurrentCourseTitle();
+            if (detectedCourse) state.currentCourse = detectedCourse;
+        }
+
+        // 注册当前正在播放的课程心跳（跨标签页并发占位）
+        const activeMapId = getCurrentMapId();
+        const activeCourseKey = getCurrentCourseId() || state.currentCourse || getCurrentCourseTitle();
+        const activeCourseTitle = state.currentCourse || getCurrentCourseTitle();
+        if (activeCourseKey || activeCourseTitle) {
+            registerTabHeartbeat(activeCourseKey, activeCourseTitle, activeMapId);
+        }
+
+        // 提取当前正在播放/选中的子视频条目
+        const activeSubEl = allSubItems.find(isSubVideoActive);
+        clearCompletedReplay(activeSubEl);
+
+        // 看门狗：实时检测进度停滞、自动刷新、连续异常跳过与终极暂停保护
+        checkWatchdog(video, activeSubEl, allSubItems);
+        if (!state.enabled || state.isSwitching) return;
+
+        let currentSubName = "当前小节";
+        if (activeSubEl) {
+            const subTitleEl = activeSubEl.querySelector('[title], .truncate');
+            if (subTitleEl) currentSubName = subTitleEl.innerText.trim();
+        }
+
+        // 3. 【核心能力：自动跳过已学小节与异常跳过小节】
+        const now = Date.now();
+        const isCurDoneOrFailed = activeSubEl && (isItemCompleted(activeSubEl) || isSubVideoFailed(getSubVideoKey(activeSubEl)));
+        if (isCurDoneOrFailed && !state.isSwitching && (now - state.lastJumpTime > 5000)) {
+            // 找到第一个未完成且未被跳过的小节
+            const firstUncompleted = allSubItems.find(el => !isItemCompleted(el) && !isSubVideoFailed(getSubVideoKey(el)));
+            if (firstUncompleted) {
+                state.lastJumpTime = now;
+                state.isSwitching = true;
+                const nextTitle = firstUncompleted.querySelector('[title], .truncate')?.innerText || '下一未学小节';
+                updateHUD(`跳过已学小节，自动切换至: ${nextTitle}`, undefined, nextTitle, "00:00", undefined, allCoursesProg, courseProg.text, courseProg.percent);
+                console.log("【神奇海螺】检测到当前小节已学完或跳过，自动点击下一未完成小节:", nextTitle);
+                simulateHumanClick(firstUncompleted);
+                setManagedTimeout(() => {
+                    state.isSwitching = false;
+                }, 3000);
+                return;
+            } else if (allSubItems.length > 0 && allSubItems.every(el => isItemCompleted(el) || isSubVideoFailed(getSubVideoKey(el)))) {
+                // 严格核查：全量小节必须都已完成或跳过，才切换下一课程
+                console.log("【神奇海螺】当前课程的所有子视频均已严格核查完成或跳过！正在切换下一课程...");
+                state.isSwitching = true;
+                state.isActionPending = true;
+                switchToNextSubVideoOrCourse();
+                return;
+            }
+        }
+
+        // 4. 进度展示
+        const curr = formatTime(video.currentTime);
+        const dur = formatTime(video.duration);
+        const percent = video.duration > 0 ? Math.min(100, Math.floor((video.currentTime / video.duration) * 100)) : 0;
+        const progressStr = `${curr} / ${dur} (${percent}%)`;
+        const replay = getCompletionReplayState();
+        const playbackStatus = activeSubEl && replay.subVideoKey === getSubVideoKey(activeSubEl) && replay.attempts > 0
+            ? `正在重播末尾 ${CONFIG.completionReplaySeconds} 秒 (${replay.attempts}/${CONFIG.maxCompletionReplays})...`
+            : "正在按时长播放中...";
+
+        // 5. 自动恢复播放
+        if (video.paused && !video.ended && !state.isSwitching) {
+            video.play().then(() => {
+                if (state.enabled && !state.isSwitching) updateHUD(playbackStatus, undefined, currentSubName, progressStr, undefined, allCoursesProg, courseProg.text, courseProg.percent);
+            }).catch(e => {
+                if (state.enabled && !state.isSwitching) updateHUD("等待播放 (交互受限)", undefined, currentSubName, progressStr, undefined, allCoursesProg, courseProg.text, courseProg.percent);
+            });
+        } else if (!state.isSwitching) {
+            updateHUD(playbackStatus, undefined, currentSubName, progressStr, undefined, allCoursesProg, courseProg.text, courseProg.percent);
+        }
+
+        // 6. 视频播放完成检测
+        const isVideoFinished = video.ended || (video.duration > 0 && video.currentTime >= video.duration - 1);
+        if (isVideoFinished && !state.isSwitching) {
+            state.isSwitching = true;
+            updateHUD(`当前节播放完毕，等待 ${CONFIG.heartbeatWait / 1000} 秒上报心跳...`, undefined, currentSubName, "100%", undefined, allCoursesProg, courseProg.text, courseProg.percent);
+            console.log("【神奇海螺】当前子视频播放结束，等待服务器心跳同步...");
+
+            setManagedTimeout(() => {
+                switchToNextSubVideoOrCourse();
+            }, CONFIG.heartbeatWait);
+        }
+    }
+
+    // 切换到下一个未完成的子小节，或切换到下一门大课程（严格核实完成状态）
+    function switchToNextSubVideoOrCourse() {
+        if (!state.enabled) return;
+        state.isSwitching = true; // 进入切换流程即刻加锁，防止多轮轮询并发重入
+
+        const allSubItems = getAllSubVideoItems();
+        console.log(`【神奇海螺】正在检查小节完成情况，共有 ${allSubItems.length} 个子小节`);
+
+        // 1. 严格防御：如果未获取到任何子小节（目录未加载完成），绝不能判定为整门课完成！
+        if (!allSubItems || allSubItems.length === 0) {
+            console.warn("【神奇海螺】未检测到任何子小节，可能目录尚未渲染完毕，等待重新检测...");
+            state.isSwitching = false;
+            return;
+        }
+
+        // 找到当前选中小节的索引
+        const currentIndex = allSubItems.findIndex(isSubVideoActive);
+
+        // 2. 核心保护：切往下一节前，必须先确认【当前小节已打勾完成】（已卡死跳过的小节除外）！
+        // 如果当前刚播完的小节尚未完成且未被跳过，原地等待心跳上报打勾，避免心跳延迟导致漏计进度
+        const isCurSubFailed = currentIndex !== -1 && isSubVideoFailed(getSubVideoKey(allSubItems[currentIndex]));
+        if (currentIndex !== -1 && !isItemCompleted(allSubItems[currentIndex]) && !isCurSubFailed) {
+            state.syncRetryCount = (state.syncRetryCount || 0) + 1;
+            const curTitle = allSubItems[currentIndex].querySelector('[title], .truncate')?.innerText || '当前小节';
+
+            if (state.syncRetryCount <= 4) { // 等待最多 4 次 * 3秒 = 12秒
+                console.log(`【神奇海螺】当前小节(${curTitle})尚未打勾，等待服务器心跳状态同步确认 (第 ${state.syncRetryCount}/4 次)...`);
+                updateHUD(`等待当前节心跳同步确认 (${state.syncRetryCount}/4)...`);
+                setManagedTimeout(() => {
+                    switchToNextSubVideoOrCourse();
+                }, 3000);
+                return;
+            } else {
+                replayVideoTail(allSubItems[currentIndex]);
+                return;
+            }
+        } else {
+            // 当前小节已打勾确认完成或已作为卡死小节跳过，重置重试计数
+            state.syncRetryCount = 0;
+            if (currentIndex !== -1) clearCompletedReplay(allSubItems[currentIndex]);
+        }
+
+        // 3. 当前小节已完成确认或跳过后，寻找下一个【未完成且未被跳过】的子小节
+        let nextTarget = null;
+        if (currentIndex !== -1) {
+            for (let i = currentIndex + 1; i < allSubItems.length; i++) {
+                if (!isItemCompleted(allSubItems[i]) && !isSubVideoFailed(getSubVideoKey(allSubItems[i]))) {
+                    nextTarget = allSubItems[i];
+                    break;
+                }
+            }
+        }
+
+        // 如果当前小节之后没有，循环回前面找
+        if (!nextTarget) {
+            const searchLimit = currentIndex !== -1 ? currentIndex : allSubItems.length;
+            for (let i = 0; i < searchLimit; i++) {
+                if (!isItemCompleted(allSubItems[i]) && !isSubVideoFailed(getSubVideoKey(allSubItems[i]))) {
+                    nextTarget = allSubItems[i];
+                    break;
+                }
+            }
+        }
+
+        // 4. 如果找到了其他未学小节，直接点击播放！
+        if (nextTarget) {
+            const nextTitle = nextTarget.querySelector('[title], .truncate')?.innerText || '下一未学小节';
+            updateHUD(`自动连播下一小节: ${nextTitle}`, undefined, nextTitle, "00:00");
+            console.log("【神奇海螺】点击播放未完成小节:", nextTitle);
+            simulateHumanClick(nextTarget);
+            setManagedTimeout(() => {
+                state.isSwitching = false;
+            }, 3000);
+            return;
+        }
+
+        // 5. 严格验证：全量小节必须【每一小节都已完成或已跳过】才准退出课程！
+        const isAllStrictlyCompleted = allSubItems.length > 0 && allSubItems.every(el => isItemCompleted(el) || isSubVideoFailed(getSubVideoKey(el)));
+        if (!isAllStrictlyCompleted) {
+            console.warn("【神奇海螺】未全部打勾或跳过，暂不退出课程，等待状态确认...");
+            state.isSwitching = false;
+            return;
+        }
+
+        // 记录本门课程已完成，跳过考试或后续重复检查（基于当前 地图ID + 课程标识 作用域）
+        const mapId = getCurrentMapId();
+        const courseId = getCurrentCourseId();
+        const courseTitle = getCurrentCourseTitle();
+        if (courseId) markCourseHandled(mapId, courseId);
+        if (courseTitle) markCourseHandled(mapId, courseTitle);
+        if (state.currentCourse) markCourseHandled(mapId, state.currentCourse);
+
+        const hasExam = detectCourseExam();
+        const allCoursesProg = getStorageItem(STORAGE_KEYS.mapProgress, 'jinpei_map_progress') || state.allCoursesProgress || "";
+
+        if (hasExam) {
+            console.log("【神奇海螺】检测到本课程包含课后考试/测验节点，根据策略跳过考试，结束本课程！");
+            updateHUD("📝 本课视频已学完（包含考试，已自动跳过），正在切课...", undefined, undefined, "100%", undefined, allCoursesProg, "全部完成 (考试已跳过)", 100);
+        } else {
+            console.log("【神奇海螺】严格核实：本课程全量子视频均已完成！准备返回课程目录选择新课程...");
+            updateHUD("本课程全部完成，正在返回学习目录切换新课程...", undefined, undefined, "100%", undefined, allCoursesProg, "全部完成", 100);
+        }
+
+        // 释放当前课程的并发占位，避免返回目录后由于心跳残留误判为冲突
+        registerTabHeartbeat("", "正在返回目录...", mapId);
+
+        // 保持切换锁与操作锁，防止目录切换慢时连续重复点击
+        state.isSwitching = true;
+        state.isActionPending = true;
+        const sourceUrl = location.href;
+        const startedAt = Date.now();
+
+        // 尝试点击侧边栏“学习目录”
+        const catalogLi = Array.from(document.querySelectorAll('li, div, span, button'))
+            .find(el => el.innerText && el.innerText.trim() === '学习目录' && el.children.length === 0);
+
+        if (catalogLi) {
+            simulateHumanClick(catalogLi.closest('li, button, div, a'));
+            waitForCourseCatalog(sourceUrl, startedAt);
+        } else {
+            // 点击返回按钮
+            const backBtn = Array.from(document.querySelectorAll('button, span, div, a'))
+                .find(el => el.innerText && /^(返回|返回目录|返回课程)$/.test(el.innerText.trim()) && (el.children.length === 0 || el.tagName === 'BUTTON'));
+            if (backBtn) {
+                const clickTarget = backBtn.closest('button, a, div[role="button"]') || backBtn;
+                simulateHumanClick(clickTarget);
+            } else {
+                location.href = CONFIG.myTaskUrl;
+            }
+            waitForCourseCatalog(sourceUrl, startedAt);
+        }
+    }
+
+    // ==========================================
+    // 5. 主循环调度器
+    // ==========================================
+    function mainLoop() {
+        createHUD();
+
+        // 未手动启动时，不执行任何自动化逻辑（包括不自动弹窗确认、不自动播放、不自动跳转）
+        if (!state.enabled) return;
+
+        autoDismissDialogs();
+
+        const url = location.href;
+
+        if (url.includes('/home/index') || url.includes('/home/login') || url.includes('/home/portal')) {
+            handleLoginAndIndex();
+        } else if (url.includes('/home/my/myTask')) {
+            handleMyTaskPage();
+        } else if (url.includes('/home/training/detail/')) {
+            handleDetailPage();
+        } else if (url.includes('/home/training/study/') || url.includes('/home/courseplay/')) {
+            handleStudyPage();
+        }
+    }
+
+    enableAntiPause();
+    setInterval(mainLoop, CONFIG.checkInterval);
+    setTimeout(mainLoop, 1000);
+
+})();
