@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.5.4
+// @version      1.5.5
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log("【神奇海螺 v1.5.4】脚本初始化启动...");
+    console.log("【神奇海螺 v1.5.5】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -103,6 +103,11 @@
 
     // 跨标签页并发调度支持 (唯一 Tab 标识与多开协调)
     const TAB_ID = 'kme_' + Math.random().toString(36).slice(2, 8) + '_' + Date.now().toString(36);
+    const TAB_STORAGE_PREFIX = '_kme_tab_';
+    const TAB_HEARTBEAT_TTL = 120000;
+    let currentClaim = null;
+    let claimGeneration = 0;
+    let studyCheckPending = false;
 
     function getConcurrencySetting() {
         const val = parseInt(getLocalItem(STORAGE_KEYS.concurrency, (CONFIG.defaultConcurrency || 1).toString()), 10);
@@ -127,12 +132,18 @@
 
     function getActiveTabs() {
         try {
-            const raw = getLocalItem(STORAGE_KEYS.activeTabs, '{}');
-            const map = JSON.parse(raw) || {};
+            // 旧版记录只读兼容；新版每个窗口独立写入，避免覆盖其他窗口。
+            let map = {};
+            try { map = JSON.parse(getLocalItem(STORAGE_KEYS.activeTabs, '{}')) || {}; } catch (_) {}
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith(TAB_STORAGE_PREFIX)) continue;
+                try { map[key.slice(TAB_STORAGE_PREFIX.length)] = JSON.parse(localStorage.getItem(key)); } catch (_) {}
+            }
             const now = Date.now();
             const alive = {};
             for (const [id, data] of Object.entries(map)) {
-                if (data && typeof data.timestamp === 'number' && (now - data.timestamp < 8000)) {
+                if (data && typeof data.timestamp === 'number' && (now - data.timestamp < TAB_HEARTBEAT_TTL)) {
                     alive[id] = data;
                 }
             }
@@ -144,24 +155,25 @@
 
     function registerTabHeartbeat(courseKey, courseTitle, mapId) {
         try {
-            const active = getActiveTabs();
-            active[TAB_ID] = {
+            const data = {
                 courseKey: courseKey || "",
                 courseTitle: courseTitle || "",
                 mapId: mapId || getCurrentMapId() || "",
                 timestamp: Date.now(),
                 url: typeof location !== 'undefined' ? location.href : "",
             };
-            setLocalItem(STORAGE_KEYS.activeTabs, JSON.stringify(active));
-        } catch (_) {}
+            // 播放器路由可能只含地图 ID，续期必须沿用领取时的课程标识。
+            if (currentClaim) Object.assign(data, currentClaim.course);
+            localStorage.setItem(TAB_STORAGE_PREFIX + TAB_ID, JSON.stringify(data));
+            return true;
+        } catch (_) { return false; }
     }
 
     function unregisterTab() {
-        try {
-            const active = getActiveTabs();
-            delete active[TAB_ID];
-            setLocalItem(STORAGE_KEYS.activeTabs, JSON.stringify(active));
-        } catch (_) {}
+        claimGeneration++;
+        if (currentClaim) currentClaim.release();
+        currentClaim = null;
+        removeLocalItem(TAB_STORAGE_PREFIX + TAB_ID);
     }
 
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
@@ -192,12 +204,53 @@
         return false;
     }
 
-    function tryClaimCourseSlot(courseKey, courseTitle, mapId) {
-        if (isCourseBusyByOtherTab(courseKey, courseTitle, mapId)) {
-            return false;
+    async function tryClaimCourseSlot(courseKey, courseTitle, mapId) {
+        const course = { courseKey, courseTitle, mapId: mapId || getCurrentMapId() };
+        const lockName = '_kme_course_' + JSON.stringify([course.mapId, courseTitle || courseKey]);
+        if (currentClaim) return currentClaim.lockName === lockName;
+        if (typeof navigator === 'undefined' || !navigator.locks) {
+            throw new Error('浏览器不支持跨窗口课程锁，请使用新版 Chrome');
         }
-        registerTabHeartbeat(courseKey, courseTitle, mapId);
-        return true;
+        const generation = claimGeneration;
+        const url = location.href;
+        // 全局短锁串行完成检查和登记；课程锁持续持有到完成、暂停或关闭。
+        return navigator.locks.request('_kme_course_scheduler', async () => {
+            if (!state.enabled || generation !== claimGeneration || location.href !== url) return false;
+            if (currentClaim) return currentClaim.lockName === lockName;
+            if (isCourseBusyByOtherTab(courseKey, courseTitle, course.mapId)) return false;
+            const occupied = Object.entries(getActiveTabs()).filter(([id, data]) => id !== TAB_ID && data.courseKey).length;
+            if (occupied >= getConcurrencySetting()) return false;
+            const locks = await navigator.locks.query();
+            if (locks.held.filter(lock => lock.name.startsWith('_kme_course_slot_')).length >= getConcurrencySetting()) return false;
+            for (let slot = 0; slot < getConcurrencySetting(); slot++) {
+                const claimed = await new Promise((resolve, reject) => {
+                    // 并发名额也持有锁，心跳过期不会使冻结窗口的名额被重复使用。
+                    navigator.locks.request('_kme_course_slot_' + slot, { ifAvailable: true }, async slotLock => {
+                        if (!slotLock) { resolve(false); return; }
+                        await navigator.locks.request(lockName, { ifAvailable: true }, async lock => {
+                            if (!lock || !state.enabled || generation !== claimGeneration || location.href !== url) {
+                                resolve(false);
+                                return;
+                            }
+                            let release;
+                            const held = new Promise(done => { release = done; });
+                            currentClaim = { course, lockName, release };
+                            if (!registerTabHeartbeat(courseKey, courseTitle, course.mapId)) {
+                                currentClaim = null;
+                                release();
+                                reject(new Error('无法保存课程占用记录，已停止学习'));
+                                return;
+                            }
+                            resolve(true);
+                            await held;
+                        });
+                    }).catch(reject);
+                });
+                if (claimed) return true;
+                if (!state.enabled || generation !== claimGeneration || location.href !== url) return false;
+            }
+            return false;
+        });
     }
 
     // 全局状态管理：默认首次打开时不自动运行；若用户手动点击了【开始学习】，则在当前标签页的流转与刷新中持续保持运行！
@@ -514,7 +567,7 @@
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
                     <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.4</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.5</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -1758,7 +1811,22 @@
     }
 
     // 流程 D: 学习与播放页 (training/study)
-    function handleStudyPage() {
+    async function handleStudyPage() {
+        if (studyCheckPending) return;
+        studyCheckPending = true;
+        try {
+            await processStudyPage();
+        } catch (error) {
+            if (state.enabled) pauseAutomation(error.message || '课程调度异常，已暂停');
+            console.error('【神奇海螺】课程调度失败:', error);
+        } finally {
+            studyCheckPending = false;
+        }
+    }
+
+    async function processStudyPage() {
+        const pageUrl = location.href;
+        const generation = claimGeneration;
         const video = document.querySelector('video');
 
         // 情况 1: 页面正在展示课程大目录（中间主区域未打开视频播放器）
@@ -1836,13 +1904,19 @@
                     const cKey = getCourseKeyFromItem(c);
                     const cName = (c.innerText || '').split('\n')[0].trim();
                     if (!isCourseBusyByOtherTab(cKey, cName, mapId)) {
-                        if (tryClaimCourseSlot(cKey, cName, mapId)) {
+                        const claimed = await tryClaimCourseSlot(cKey, cName, mapId);
+                        if (!state.enabled || generation !== claimGeneration || location.href !== pageUrl) {
+                            if (claimed && generation === claimGeneration) unregisterTab();
+                            return;
+                        }
+                        if (claimed) {
                             targetCourse = c;
                             break;
                         }
                     }
                 }
 
+                if (!state.enabled) return;
                 if (targetCourse) {
                     // 若开启了多路并发，且当前活跃标签数少于目标并发数，且还有更多未开工的课程，尝试唤起新的并发窗口
                     const availableRemaining = uncompletedCourses.filter(c => {
@@ -1869,7 +1943,6 @@
 
                     state.isActionPending = true;
                     const cName = (targetCourse.innerText || '').split('\n')[0].trim();
-                    const cKey = getCourseKeyFromItem(targetCourse);
                     state.currentCourse = cName;
                     updateHUD(`进入未完成课程: ${cName}`, undefined, undefined, undefined, cName, allCoursesProg);
                     console.log("【神奇海螺】正在进入未完成大课:", cName);
@@ -1881,7 +1954,9 @@
                     }, 1000);
                 } else {
                     // 没有找到可用课程，但地图尚未全部学完：说明剩余未完成课程正由其他并发窗口正在学习中
-                    registerTabHeartbeat("", "等待并发窗口完成中...", mapId);
+                    if (!registerTabHeartbeat("", "等待并发窗口完成中...", mapId)) {
+                        throw new Error('无法保存窗口状态，已停止学习');
+                    }
                     updateHUD(`⏳ 剩余课程正由其他窗口并发学习中 (${activeTabsCount} 路并发)，本窗口候选中...`, undefined, undefined, undefined, undefined, allCoursesProg);
                 }
             }
@@ -1889,6 +1964,18 @@
         }
 
         // 情况 2: 页面已处于视频播放状态
+        if (!currentClaim && !state.isSwitching && !state.isActionPending) {
+            const title = getCurrentCourseTitle();
+            const claimed = await tryClaimCourseSlot(getCurrentCourseId() || title, title, getCurrentMapId());
+            if (!state.enabled || generation !== claimGeneration || location.href !== pageUrl || document.querySelector('video') !== video) {
+                if (claimed && generation === claimGeneration) unregisterTab();
+                return;
+            }
+            if (!claimed) {
+                pauseAutomation('当前课程已被其他窗口占用或并发已满，已暂停');
+                return;
+            }
+        }
         handleVideoPlayback(video);
     }
 
@@ -1922,7 +2009,9 @@
         const activeCourseKey = getCurrentCourseId() || state.currentCourse || getCurrentCourseTitle();
         const activeCourseTitle = state.currentCourse || getCurrentCourseTitle();
         if (activeCourseKey || activeCourseTitle) {
-            registerTabHeartbeat(activeCourseKey, activeCourseTitle, activeMapId);
+            if (!registerTabHeartbeat(activeCourseKey, activeCourseTitle, activeMapId)) {
+                throw new Error('无法续期课程占用记录，已停止学习');
+            }
         }
 
         // 提取当前正在播放/选中的子视频条目
@@ -2104,6 +2193,7 @@
         }
 
         // 释放当前课程的并发占位，避免返回目录后由于心跳残留误判为冲突
+        unregisterTab();
         registerTabHeartbeat("", "正在返回目录...", mapId);
 
         // 保持切换锁与操作锁，防止目录切换慢时连续重复点击
@@ -2153,7 +2243,7 @@
         } else if (url.includes('/home/training/detail/')) {
             handleDetailPage();
         } else if (url.includes('/home/training/study/') || url.includes('/home/courseplay/')) {
-            handleStudyPage();
+            return handleStudyPage();
         }
     }
 
