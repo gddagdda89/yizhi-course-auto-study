@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.5.2
+// @version      1.5.3
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log("【神奇海螺 v1.5.2】脚本初始化启动...");
+    console.log("【神奇海螺 v1.5.3】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -369,10 +369,10 @@
                 position: fixed;
                 z-index: 999999;
                 /* 浅色高通透 Apple 风格毛玻璃 */
-                background: rgba(255, 255, 255, 0.72) !important;
-                backdrop-filter: blur(24px) saturate(180%) !important;
-                -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
-                border: 1px solid rgba(255, 255, 255, 0.85) !important;
+                background: rgba(255, 255, 255, 0.42) !important;
+                backdrop-filter: blur(16px) saturate(180%) !important;
+                -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+                border: 1px solid rgba(255, 255, 255, 0.55) !important;
                 border-radius: 18px !important;
                 box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(255, 255, 255, 0.6) inset, 0 2px 4px rgba(0, 0, 0, 0.04) !important;
                 color: #1e293b !important;
@@ -383,13 +383,13 @@
                 transition: box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease;
             }
             .jinpei-glass:hover {
-                background: rgba(255, 255, 255, 0.82) !important;
-                border-color: rgba(255, 255, 255, 0.95) !important;
+                background: rgba(255, 255, 255, 0.58) !important;
+                border-color: rgba(255, 255, 255, 0.7) !important;
                 box-shadow: 0 24px 48px -10px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(255, 255, 255, 0.8) inset !important;
             }
             .jinpei-info-box {
-                background: rgba(255, 255, 255, 0.45);
-                border: 1px solid rgba(255, 255, 255, 0.85);
+                background: rgba(255, 255, 255, 0.18);
+                border: 1px solid rgba(255, 255, 255, 0.55);
                 border-radius: 12px;
                 padding: 10px 12px;
                 backdrop-filter: blur(8px);
@@ -513,8 +513,8 @@
             <div id="jinpei-hud-header" style="padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; border-bottom: ${isCollapsed ? 'none' : '1px solid rgba(0, 0, 0, 0.06)'}; white-space: nowrap;">
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
-                    <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.2</span>
+                    <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.3</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
