@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.5.5
+// @version      1.5.6
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log("【神奇海螺 v1.5.5】脚本初始化启动...");
+    console.log("【神奇海螺 v1.5.6】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -28,6 +28,7 @@
         replayStartTimeout: 15000, // 回退与恢复播放的总等待时间
         replayPlayMaxAttempts: 3, // 每轮重播内，播放启动请求最多尝试次数
         catalogWaitTimeout: 15000, // 返回目录的最大等待时间 (ms)
+        pageReadyTimeout: 20000,  // 进入任务/课程后等待页面实际就绪的时间
         myTaskUrl: "https://pc.kmelearning.com/jsncxyslhs/home/my/myTask",
         autoMute: true,           // 自动静音播放
         playbackRate: 1.0,        // 正常播放速度
@@ -52,6 +53,7 @@
         failedVideos: '_kme_wd_failed',   // 卡死跳过的小节列表
         concurrency: '_kme_concurrency',  // 并发课程数设置 (1 ~ 6)
         activeTabs: '_kme_active_tabs',   // 并发多标签页活跃状态表
+        diagnostics: '_kme_diagnostics', // 当前窗口的最近诊断日志（跨刷新）
     };
 
     function getStorageItem(keyName, legacyKey) {
@@ -332,6 +334,104 @@
 
     // 定时器集中管理器：支持暂停时一键清空所有已安排的定时任务（真实运行下自动加入拟人时间抖动）
     const activeTimers = new Set();
+    let pageWaitGeneration = 0;
+    let pageWaitActive = false;
+    const DIAGNOSTIC_LIMIT = 200;
+    let diagnosticLogs = [];
+    try {
+        const saved = JSON.parse(getStorageItem(STORAGE_KEYS.diagnostics) || '[]');
+        if (Array.isArray(saved)) diagnosticLogs = saved.filter(entry => entry && Number.isFinite(entry.time) && typeof entry.message === 'string').slice(-DIAGNOSTIC_LIMIT);
+    } catch (_) {}
+
+    // 只收集本脚本的日志，不替换网页的 console；页面上下文仅保存路径。
+    function recordDiagnostic(level, ...args) {
+        const message = args.map(value => {
+            if (value && typeof value.message === 'string') return `${value.name || 'Error'}: ${value.message}`;
+            if (typeof value === 'string') return value;
+            try { return JSON.stringify(value) ?? String(value); } catch (_) { return String(value); }
+        }).join(' ').slice(0, 1200);
+        diagnosticLogs.push({ time: Date.now(), level, tab: TAB_ID, message,
+            task: state.currentTask, course: state.currentCourse, sub: state.currentSubVideo,
+            syncRetry: state.syncRetryCount, route: location.href.split(/[?#]/)[0].replace(/^https?:\/\/[^/]+/, '') });
+        diagnosticLogs = diagnosticLogs.slice(-DIAGNOSTIC_LIMIT);
+        setStorageItem(STORAGE_KEYS.diagnostics, JSON.stringify(diagnosticLogs));
+        renderDiagnosticLogs();
+    }
+
+    const diagnosticConsole = Object.fromEntries(['log', 'warn', 'error'].map(method => [method, (...args) => {
+        console[method](...args);
+        recordDiagnostic(method === 'log' ? 'INFO' : method.toUpperCase(), ...args);
+    }]));
+
+    function formatDiagnosticLogs() {
+        return '神奇海螺诊断日志\n' + diagnosticLogs.map(entry =>
+            `[${new Date(entry.time).toISOString()}] [${entry.level}] [${entry.tab}] ${entry.message}\n` +
+            `  任务=${entry.task || '-'} 课程=${entry.course || '-'} 小节=${entry.sub || '-'} 同步重试=${entry.syncRetry || 0} 页面=${entry.route || '-'}`
+        ).join('\n');
+    }
+
+    function renderDiagnosticLogs() {
+        const panel = getHUDElement('jinpei-diagnostics');
+        const output = getHUDElement('jinpei-diagnostics-output');
+        if (panel && panel.open && output) output.value = formatDiagnosticLogs();
+    }
+
+    function clearDiagnosticLogs() {
+        diagnosticLogs = [];
+        removeStorageItem(STORAGE_KEYS.diagnostics);
+        const notice = getHUDElement('jinpei-diagnostics-notice');
+        if (notice) notice.innerText = '已清空';
+        renderDiagnosticLogs();
+    }
+
+    async function copyDiagnosticLogs() {
+        const notice = getHUDElement('jinpei-diagnostics-notice');
+        try {
+            await navigator.clipboard.writeText(formatDiagnosticLogs());
+            if (notice) notice.innerText = '已复制';
+            return true;
+        } catch (_) {
+            const panel = getHUDElement('jinpei-diagnostics');
+            if (panel) panel.open = true;
+            renderDiagnosticLogs();
+            const output = getHUDElement('jinpei-diagnostics-output');
+            if (output && typeof output.select === 'function') { output.focus(); output.select(); }
+            if (notice) notice.innerText = '请按 Ctrl+C 复制';
+            return false;
+        }
+    }
+
+    function waitForPageReady(label, isReady, timeout = CONFIG.pageReadyTimeout) {
+        const generation = ++pageWaitGeneration;
+        const startedAt = Date.now();
+        const previousStatus = state.statusText;
+        pageWaitActive = true;
+        state.isActionPending = true;
+        diagnosticConsole.log(`等待页面就绪：${label}`);
+        function poll() {
+            if (!state.enabled || generation !== pageWaitGeneration) return;
+            try {
+                if (isReady()) {
+                    pageWaitActive = false;
+                    state.isActionPending = false;
+                    state.isSwitching = false;
+                    state.syncRetryCount = 0;
+                    diagnosticConsole.log(`页面已就绪：${label}（${Date.now() - startedAt}ms）`);
+                    return;
+                }
+                if (Date.now() - startedAt >= timeout) {
+                    pauseAutomation(`${label}超时，已暂停；请检查页面后重新开始。`);
+                    return;
+                }
+                if (currentClaim && !registerTabHeartbeat()) throw new Error('无法续期课程占用记录');
+                updateHUD(`${previousStatus} · 等待${label}...`);
+                setManagedTimeout(poll, 500);
+            } catch (error) {
+                pauseAutomation(`${label}失败：${error.message}`);
+            }
+        }
+        poll();
+    }
     function setManagedTimeout(fn, delay) {
         let actualDelay = delay;
         // 在浏览器真实环境下引入 15% 随机时间抖动，抹除固定的机器定时特征（Node单元测试环境保持精准）
@@ -357,6 +457,9 @@
     }
 
     function pauseAutomation(message) {
+        pageWaitGeneration++;
+        pageWaitActive = false;
+        diagnosticConsole.warn('自动学习暂停：', message);
         completionReplayGeneration++;
         completionReplayMemory = null;
         removeStorageItem(STORAGE_KEYS.completionReplay);
@@ -567,7 +670,7 @@
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
                     <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.5</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.6</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -683,6 +786,15 @@
                     <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; text-decoration: underline;" title="在后台多开一个课程页面">多开 1 窗口</span>
                     <span>1.0x 标准播放</span>
                 </div>
+                <details id="jinpei-diagnostics" style="margin-top: 6px; font-size: 10px; color: #94a3b8; white-space: normal;">
+                    <summary style="cursor: pointer; width: fit-content; padding: 3px 2px;">诊断日志</summary>
+                    <div style="display: flex; align-items: center; gap: 8px; margin: 5px 0;">
+                        <button id="jinpei-diagnostics-copy" type="button" class="jinpei-icon-btn" style="width: auto; padding: 0 6px; font-size: 10px;">复制日志</button>
+                        <button id="jinpei-diagnostics-clear" type="button" class="jinpei-icon-btn" style="width: auto; padding: 0 6px; font-size: 10px;">清空</button>
+                        <span id="jinpei-diagnostics-notice" role="status"></span>
+                    </div>
+                    <textarea id="jinpei-diagnostics-output" readonly aria-label="最近诊断日志" style="width: 100%; height: 140px; resize: vertical; border: 1px solid rgba(0,0,0,0.08); border-radius: 6px; padding: 6px; background: rgba(255,255,255,0.25); color: #475569; font: 10px/1.5 ui-monospace, monospace; user-select: text;"></textarea>
+                </details>
             </div>
         `;
 
@@ -698,6 +810,14 @@
         const btnTextEl = getHUDElement('jinpei-btn-text');
         const dot = getHUDElement('jinpei-hud-dot');
         const statusEl = getHUDElement('jinpei-hud-status');
+        bodyEl.style.maxHeight = 'calc(100vh - 90px)';
+        bodyEl.style.overflowY = 'auto';
+        getHUDElement('jinpei-diagnostics').addEventListener('toggle', () => {
+            renderDiagnosticLogs();
+            clampHUDPosition();
+        });
+        getHUDElement('jinpei-diagnostics-copy').addEventListener('click', copyDiagnosticLogs);
+        getHUDElement('jinpei-diagnostics-clear').addEventListener('click', clearDiagnosticLogs);
 
         // 边界吸附与溢出校正：保证 HUD 在折叠、展开或窗口缩放时始终完整可见不换行
         function clampHUDPosition() {
@@ -808,11 +928,11 @@
                 dot.style.animation = "jinpei-pulse 2s infinite ease-in-out";
                 statusEl.style.color = "#0284c7";
                 updateHUD("已手动启动，正在运行中...");
-                console.log("【神奇海螺】用户手动点击启动自动化！");
+                diagnosticConsole.log("【神奇海螺】用户手动点击启动自动化！");
                 mainLoop();
             } else {
                 pauseAutomation("已手动暂停（所有待执行操作已取消）");
-                console.log("【神奇海螺】用户手动点击暂停，已清空待执行定时器并暂停视频。");
+                diagnosticConsole.log("【神奇海螺】用户手动点击暂停，已清空待执行定时器并暂停视频。");
             }
         });
 
@@ -827,7 +947,7 @@
                 const cur = getConcurrencySetting();
                 if (cur > 1) {
                     const next = setConcurrencySetting(cur - 1);
-                    console.log(`【神奇海螺】并发设置减少至: ${next} 路`);
+                    diagnosticConsole.log(`【神奇海螺】并发设置减少至: ${next} 路`);
                     updateHUD(`并发课程数已调整为 ${next} 路`);
                 }
             });
@@ -839,7 +959,7 @@
                 const cur = getConcurrencySetting();
                 if (cur < (CONFIG.maxConcurrency || 6)) {
                     const next = setConcurrencySetting(cur + 1);
-                    console.log(`【神奇海螺】并发设置增加至: ${next} 路`);
+                    diagnosticConsole.log(`【神奇海螺】并发设置增加至: ${next} 路`);
                     updateHUD(`并发课程数已调整为 ${next} 路`);
                     const activeCount = Object.keys(getActiveTabs()).length;
                     if (activeCount < next && typeof window !== 'undefined' && typeof window.open === 'function' && location.href.includes('/home/training/study/')) {
@@ -864,7 +984,7 @@
                         updateHUD("正在唤起新窗口进行并发学习...");
                     }
                 } catch (err) {
-                    console.error(err);
+                    diagnosticConsole.error(err);
                 }
             });
         }
@@ -1042,9 +1162,9 @@
                 if (state.enabled) e.stopImmediatePropagation();
             }, true);
 
-            console.log("【神奇海螺】防暂停与防后台机制已初始化（随【开始/暂停】动态生效）。");
+            diagnosticConsole.log("【神奇海螺】防暂停与防后台机制已初始化（随【开始/暂停】动态生效）。");
         } catch (e) {
-            console.warn("【神奇海螺】防暂停注入异常:", e);
+            diagnosticConsole.warn("【神奇海螺】防暂停注入异常:", e);
         }
     }
 
@@ -1067,7 +1187,7 @@
 
                 // 1. 明确的学习/播放恢复按钮（精确匹配），直接点击
                 if (/^(继续学习|继续播放)$/.test(btnText)) {
-                    console.log("【神奇海螺】检测到学习恢复弹窗，点击继续:", btnText);
+                    diagnosticConsole.log("【神奇海螺】检测到学习恢复弹窗，点击继续:", btnText);
                     simulateHumanClick(btn);
                     return;
                 }
@@ -1076,7 +1196,7 @@
                 if (/^(确定|我知道了|知道了|继续)$/.test(btnText)) {
                     const isLearningNotice = /长时间未操作|学习超时|超时未操作|继续学习|继续观看|挂机检测|防挂机|学时累计|学时记录|是否继续学习/i.test(dialogText);
                     if (isLearningNotice) {
-                        console.log("【神奇海螺】检测到学习超时/挂机提醒弹窗，点击确认:", btnText);
+                        diagnosticConsole.log("【神奇海螺】检测到学习超时/挂机提醒弹窗，点击确认:", btnText);
                         simulateHumanClick(btn);
                         return;
                     }
@@ -1087,13 +1207,13 @@
             if (/考试|测验|测试/.test(dialogText)) {
                 const cancelBtn = buttons.find(b => /^(取消|关闭|稍后|稍后再说|暂不|我知道了)$/.test((b.innerText || '').trim()));
                 if (cancelBtn) {
-                    console.log("【神奇海螺】检测到考试邀请/提醒弹窗，根据配置自动跳过/关闭:", cancelBtn.innerText.trim());
+                    diagnosticConsole.log("【神奇海螺】检测到考试邀请/提醒弹窗，根据配置自动跳过/关闭:", cancelBtn.innerText.trim());
                     simulateHumanClick(cancelBtn);
                     return;
                 }
                 const closeIcon = dialog.querySelector('.ant5-modal-close, .ant-modal-close, [aria-label="Close"], [aria-label="关闭"]');
                 if (closeIcon && closeIcon.offsetParent !== null) {
-                    console.log("【神奇海螺】检测到考试邀请/提醒弹窗，点击右上角关闭按钮");
+                    diagnosticConsole.log("【神奇海螺】检测到考试邀请/提醒弹窗，点击右上角关闭按钮");
                     simulateHumanClick(closeIcon);
                     return;
                 }
@@ -1146,7 +1266,7 @@
     function ensureAllChaptersExpanded() {
         const headers = Array.from(document.querySelectorAll('.ant5-collapse-header[aria-expanded="false"], .ant-collapse-header[aria-expanded="false"], [class*="collapse-header"][aria-expanded="false"]'));
         if (headers.length > 0) {
-            console.log(`【神奇海螺】发现 ${headers.length} 个折叠章节，正在自动展开...`);
+            diagnosticConsole.log(`【神奇海螺】发现 ${headers.length} 个折叠章节，正在自动展开...`);
             headers.forEach(h => simulateHumanClick(h));
         }
     }
@@ -1471,7 +1591,7 @@
         const fail = (reason) => {
             if (!isPending()) return;
             settled = true;
-            console.error(`【神奇海螺】重播恢复失败: ${reason}`, {
+            diagnosticConsole.error(`【神奇海螺】重播恢复失败: ${reason}`, {
                 currentTime: video.currentTime, targetTime, seeking: video.seeking,
                 readyState: video.readyState, paused: video.paused, playAttempts,
             });
@@ -1491,7 +1611,7 @@
             if (!isPending() || id !== requestId) return;
             requestId++; // 忽略被中断的旧播放请求及其迟到回调
             lastError = `${error?.name || 'Error'}: ${error?.message || String(error)}`;
-            console.warn(`【神奇海螺】重播播放请求失败 (${playAttempts}/${CONFIG.replayPlayMaxAttempts}): ${lastError}`);
+            diagnosticConsole.warn(`【神奇海螺】重播播放请求失败 (${playAttempts}/${CONFIG.replayPlayMaxAttempts}): ${lastError}`);
             if (playAttempts >= CONFIG.replayPlayMaxAttempts) {
                 fail(`重播启动连续失败 ${playAttempts} 次 (${lastError})`);
                 return;
@@ -1549,7 +1669,7 @@
             watchdogRuntime.initialProgressTime = targetTime;
             watchdogRuntime.lastProgressTimestamp = Date.now();
             const message = `「${title}」尚未打勾，重播末尾 ${Math.min(video.duration, CONFIG.completionReplaySeconds)} 秒 (${attempts + 1}/${CONFIG.maxCompletionReplays})...`;
-            console.warn(`【神奇海螺】${message}`);
+            diagnosticConsole.warn(`【神奇海螺】${message}`);
             updateHUD(message);
             setManagedTimeout(waitAndPlay, 500);
         } catch (error) {
@@ -1629,7 +1749,7 @@
             // 若从进入起向前正常推进超过 3 秒，确信视频已成功播放，清除当前小节刷新计数和连续失败计数
             if (Math.abs(video.currentTime - watchdogRuntime.initialProgressTime) >= 3) {
                 if (wd.reloadCount > 0 || wd.consecutiveFails > 0) {
-                    console.log("【神奇海螺·看门狗】视频恢复正常稳定播放，清除看门狗异常计数。");
+                    diagnosticConsole.log("【神奇海螺·看门狗】视频恢复正常稳定播放，清除看门狗异常计数。");
                     wd.reloadCount = 0;
                     wd.consecutiveFails = 0;
                     setWatchdogState(wd);
@@ -1646,7 +1766,7 @@
                 pauseAutomation(`「${getSubVideoTitle(activeSub)}」重播期间播放停滞，已暂停；请检查播放器和网络。`);
                 return;
             }
-            console.warn(`【神奇海螺·看门狗】检测到视频进度停滞超过 ${Math.round(stallTime / 1000)} 秒 (阈值: ${CONFIG.watchdogStallTimeout / 1000}s)！`);
+            diagnosticConsole.warn(`【神奇海螺·看门狗】检测到视频进度停滞超过 ${Math.round(stallTime / 1000)} 秒 (阈值: ${CONFIG.watchdogStallTimeout / 1000}s)！`);
 
             // 规则 1: 如果还未超过 5 次重试，自动刷新网页
             if (wd.reloadCount < CONFIG.watchdogMaxReloads) {
@@ -1654,7 +1774,7 @@
                 setWatchdogState(wd);
                 const reloadMsg = `⚠️ 视频进度卡住超过 30 秒，看门狗自动刷新页面（第 ${wd.reloadCount}/${CONFIG.watchdogMaxReloads} 次）...`;
                 updateHUD(reloadMsg);
-                console.warn(`【神奇海螺·看门狗】${reloadMsg}`);
+                diagnosticConsole.warn(`【神奇海螺·看门狗】${reloadMsg}`);
                 if (typeof location !== 'undefined' && typeof location.reload === 'function') {
                     location.reload();
                 }
@@ -1669,7 +1789,7 @@
 
             // 规则 3: 连续 3 节课都加载不出来，自动暂停学习
             if (wd.consecutiveFails >= CONFIG.watchdogMaxConsecutiveFails) {
-                console.error(`【神奇海螺·看门狗】连续 ${wd.consecutiveFails} 节视频加载失败，触发终极暂停保护！`);
+                diagnosticConsole.error(`【神奇海螺·看门狗】连续 ${wd.consecutiveFails} 节视频加载失败，触发终极暂停保护！`);
                 clearWatchdogState();
                 pauseAutomation(`⚠️ 连续 ${CONFIG.watchdogMaxConsecutiveFails} 节课均无法正常加载播放，看门狗已自动暂停学习！请检查网络连接或课件。`);
                 return;
@@ -1677,7 +1797,7 @@
 
             const skipMsg = `⚠️ 当前小节连续 ${CONFIG.watchdogMaxReloads} 次刷新仍无法恢复播放，看门狗自动跳过并切换下一节（连续失败 ${wd.consecutiveFails}/${CONFIG.watchdogMaxConsecutiveFails} 节）...`;
             updateHUD(skipMsg);
-            console.warn(`【神奇海螺·看门狗】${skipMsg}`);
+            diagnosticConsole.warn(`【神奇海螺·看门狗】${skipMsg}`);
             watchdogRuntime.lastProgressTimestamp = Date.now();
             state.isSwitching = true;
             setManagedTimeout(() => {
@@ -1715,16 +1835,31 @@
         }
     }
 
+    function getTaskCards() {
+        return Array.from(document.querySelectorAll('div.group.cursor-pointer, .grid > div'))
+            .filter(c => /学习地图|进行中|截止/.test(c.innerText || '') && c.offsetParent !== null);
+    }
+
+    function getStudyEntryButton() {
+        return Array.from(document.querySelectorAll('button, .ant5-btn, [role="button"]'))
+            .find(b => /进入学习|继续学习|去学习/.test((b.innerText || '').trim()) && b.offsetParent !== null);
+    }
+
+    function isStudyPageReady() {
+        if (!/\/home\/(training\/study\/|courseplay\/)/.test(location.href)) return false;
+        const video = document.querySelector('video');
+        if (!video) return getCourseItems().length > 0;
+        return Number.isFinite(video.duration) && video.duration > 0 &&
+            (typeof video.readyState !== 'number' || video.readyState >= 2) &&
+            getAllSubVideoItems().some(isSubVideoActive);
+    }
+
     // 流程 B: 任务页 (myTask) 检查与自动进入
     function handleMyTaskPage() {
         if (state.isActionPending) return;
         updateHUD("正在检查我的任务列表...");
 
-        const cards = Array.from(document.querySelectorAll('div.group.cursor-pointer, .grid > div'))
-            .filter(c => {
-                const text = c.innerText || '';
-                return (text.includes('学习地图') || text.includes('进行中') || text.includes('截止')) && c.offsetParent !== null;
-            });
+        const cards = getTaskCards();
 
         if (cards.length === 0) {
             updateHUD("等待任务列表加载...");
@@ -1750,12 +1885,11 @@
             const title = (targetCard.innerText.split('\n')[0] || '学习任务').trim();
             state.currentTask = title;
             updateHUD(`进入任务: ${title}`, title);
-            console.log("【神奇海螺】找到未完成任务，正在点击进入:", title);
+            diagnosticConsole.log("【神奇海螺】找到未完成任务，正在点击进入:", title);
             setManagedTimeout(() => {
                 simulateHumanClick(targetCard);
-                setManagedTimeout(() => {
-                    state.isActionPending = false;
-                }, 3000);
+                waitForPageReady('任务学习入口加载', () =>
+                    (location.href.includes('/home/training/detail/') && !!getStudyEntryButton()) || isStudyPageReady());
             }, 1000);
         } else {
             pauseAutomation("🎉 列表中的所有学习地图均已学完（已跳过包含考试的地图）！");
@@ -1767,20 +1901,14 @@
         if (state.isActionPending) return;
         updateHUD("任务详情页，正在寻找学习入口...");
 
-        const enterBtn = Array.from(document.querySelectorAll('button, .ant5-btn, [role="button"]'))
-            .find(b => {
-                const text = (b.innerText || '').trim();
-                return /进入学习|继续学习|去学习/.test(text) && b.offsetParent !== null;
-            });
+        const enterBtn = getStudyEntryButton();
 
         if (enterBtn) {
             state.isActionPending = true;
             updateHUD("点击进入学习目录...");
             setManagedTimeout(() => {
                 simulateHumanClick(enterBtn);
-                setManagedTimeout(() => {
-                    state.isActionPending = false;
-                }, 3000);
+                waitForPageReady('学习目录加载', isStudyPageReady);
             }, 1200);
         }
     }
@@ -1794,20 +1922,11 @@
     }
 
     // 返回目录后按实际路由和目录内容解锁；超时暂停，不重复点击。
-    function waitForCourseCatalog(sourceUrl, startedAt) {
-        if (!state.enabled) return;
-        if (location.href !== sourceUrl || (!document.querySelector('video') && getCourseItems().length > 0)) {
-            state.isSwitching = false;
-            state.isActionPending = false;
-            state.syncRetryCount = 0;
-            return;
-        }
-        if (Date.now() - startedAt >= CONFIG.catalogWaitTimeout) {
-            pauseAutomation("返回学习目录超时，已暂停；请检查页面后重新开始。");
-            console.warn("【神奇海螺】返回学习目录超时，已暂停自动学习，避免重复点击。");
-            return;
-        }
-        setManagedTimeout(() => waitForCourseCatalog(sourceUrl, startedAt), 500);
+    function waitForCourseCatalog() {
+        waitForPageReady('返回学习目录', () =>
+            (!document.querySelector('video') && isStudyPageReady()) ||
+            (location.href.includes('/home/my/myTask') && getTaskCards().length > 0) ||
+            (location.href.includes('/home/training/detail/') && !!getStudyEntryButton()), CONFIG.catalogWaitTimeout);
     }
 
     // 流程 D: 学习与播放页 (training/study)
@@ -1818,13 +1937,14 @@
             await processStudyPage();
         } catch (error) {
             if (state.enabled) pauseAutomation(error.message || '课程调度异常，已暂停');
-            console.error('【神奇海螺】课程调度失败:', error);
+            diagnosticConsole.error('【神奇海螺】课程调度失败:', error);
         } finally {
             studyCheckPending = false;
         }
     }
 
     async function processStudyPage() {
+        if (pageWaitActive) return;
         const pageUrl = location.href;
         const generation = claimGeneration;
         const video = document.querySelector('video');
@@ -1874,7 +1994,7 @@
 
                     // 如果当前窗口是由主窗口弹出的并发子窗口，学完后自动关闭本窗口释放资源
                     if (typeof window !== 'undefined' && window.opener && window.opener !== window) {
-                        console.log("【神奇海螺】并发子窗口已学完全部课程，自动关闭窗口释放资源...");
+                        diagnosticConsole.log("【神奇海螺】并发子窗口已学完全部课程，自动关闭窗口释放资源...");
                         setManagedTimeout(() => {
                             try {
                                 window.close();
@@ -1932,11 +2052,11 @@
                                 if (typeof window !== 'undefined' && typeof window.open === 'function') {
                                     const newWin = window.open(location.href, '_blank');
                                     if (newWin) {
-                                        console.log(`【神奇海螺】当前已开启 ${activeTabsCount + 1}/${concurrency} 路并发学习！`);
+                                        diagnosticConsole.log(`【神奇海螺】当前已开启 ${activeTabsCount + 1}/${concurrency} 路并发学习！`);
                                     }
                                 }
                             } catch (e) {
-                                console.warn("【神奇海螺】自动弹窗受阻，请允许弹窗或手动多开:", e);
+                                diagnosticConsole.warn("【神奇海螺】自动弹窗受阻，请允许弹窗或手动多开:", e);
                             }
                         }
                     }
@@ -1945,12 +2065,11 @@
                     const cName = (targetCourse.innerText || '').split('\n')[0].trim();
                     state.currentCourse = cName;
                     updateHUD(`进入未完成课程: ${cName}`, undefined, undefined, undefined, cName, allCoursesProg);
-                    console.log("【神奇海螺】正在进入未完成大课:", cName);
+                    diagnosticConsole.log("【神奇海螺】正在进入未完成大课:", cName);
                     setManagedTimeout(() => {
                         simulateHumanClick(targetCourse);
-                        setManagedTimeout(() => {
-                            state.isActionPending = false;
-                        }, 3000);
+                        waitForPageReady('课程播放器与小节目录加载', () =>
+                            !!document.querySelector('video') && isStudyPageReady());
                     }, 1000);
                 } else {
                     // 没有找到可用课程，但地图尚未全部学完：说明剩余未完成课程正由其他并发窗口正在学习中
@@ -2039,7 +2158,7 @@
                 state.isSwitching = true;
                 const nextTitle = firstUncompleted.querySelector('[title], .truncate')?.innerText || '下一未学小节';
                 updateHUD(`跳过已学小节，自动切换至: ${nextTitle}`, undefined, nextTitle, "00:00", undefined, allCoursesProg, courseProg.text, courseProg.percent);
-                console.log("【神奇海螺】检测到当前小节已学完或跳过，自动点击下一未完成小节:", nextTitle);
+                diagnosticConsole.log("【神奇海螺】检测到当前小节已学完或跳过，自动点击下一未完成小节:", nextTitle);
                 simulateHumanClick(firstUncompleted);
                 setManagedTimeout(() => {
                     state.isSwitching = false;
@@ -2047,7 +2166,7 @@
                 return;
             } else if (allSubItems.length > 0 && allSubItems.every(el => isItemCompleted(el) || isSubVideoFailed(getSubVideoKey(el)))) {
                 // 严格核查：全量小节必须都已完成或跳过，才切换下一课程
-                console.log("【神奇海螺】当前课程的所有子视频均已严格核查完成或跳过！正在切换下一课程...");
+                diagnosticConsole.log("【神奇海螺】当前课程的所有子视频均已严格核查完成或跳过！正在切换下一课程...");
                 state.isSwitching = true;
                 state.isActionPending = true;
                 switchToNextSubVideoOrCourse();
@@ -2081,7 +2200,7 @@
         if (isVideoFinished && !state.isSwitching) {
             state.isSwitching = true;
             updateHUD(`当前节播放完毕，等待 ${CONFIG.heartbeatWait / 1000} 秒上报心跳...`, undefined, currentSubName, "100%", undefined, allCoursesProg, courseProg.text, courseProg.percent);
-            console.log("【神奇海螺】当前子视频播放结束，等待服务器心跳同步...");
+            diagnosticConsole.log("【神奇海螺】当前子视频播放结束，等待服务器心跳同步...");
 
             setManagedTimeout(() => {
                 switchToNextSubVideoOrCourse();
@@ -2095,11 +2214,11 @@
         state.isSwitching = true; // 进入切换流程即刻加锁，防止多轮轮询并发重入
 
         const allSubItems = getAllSubVideoItems();
-        console.log(`【神奇海螺】正在检查小节完成情况，共有 ${allSubItems.length} 个子小节`);
+        diagnosticConsole.log(`【神奇海螺】正在检查小节完成情况，共有 ${allSubItems.length} 个子小节`);
 
         // 1. 严格防御：如果未获取到任何子小节（目录未加载完成），绝不能判定为整门课完成！
         if (!allSubItems || allSubItems.length === 0) {
-            console.warn("【神奇海螺】未检测到任何子小节，可能目录尚未渲染完毕，等待重新检测...");
+            diagnosticConsole.warn("【神奇海螺】未检测到任何子小节，可能目录尚未渲染完毕，等待重新检测...");
             state.isSwitching = false;
             return;
         }
@@ -2115,7 +2234,7 @@
             const curTitle = allSubItems[currentIndex].querySelector('[title], .truncate')?.innerText || '当前小节';
 
             if (state.syncRetryCount <= 4) { // 等待最多 4 次 * 3秒 = 12秒
-                console.log(`【神奇海螺】当前小节(${curTitle})尚未打勾，等待服务器心跳状态同步确认 (第 ${state.syncRetryCount}/4 次)...`);
+                diagnosticConsole.log(`【神奇海螺】当前小节(${curTitle})尚未打勾，等待服务器心跳状态同步确认 (第 ${state.syncRetryCount}/4 次)...`);
                 updateHUD(`等待当前节心跳同步确认 (${state.syncRetryCount}/4)...`);
                 setManagedTimeout(() => {
                     switchToNextSubVideoOrCourse();
@@ -2157,7 +2276,7 @@
         if (nextTarget) {
             const nextTitle = nextTarget.querySelector('[title], .truncate')?.innerText || '下一未学小节';
             updateHUD(`自动连播下一小节: ${nextTitle}`, undefined, nextTitle, "00:00");
-            console.log("【神奇海螺】点击播放未完成小节:", nextTitle);
+            diagnosticConsole.log("【神奇海螺】点击播放未完成小节:", nextTitle);
             simulateHumanClick(nextTarget);
             setManagedTimeout(() => {
                 state.isSwitching = false;
@@ -2168,7 +2287,7 @@
         // 5. 严格验证：全量小节必须【每一小节都已完成或已跳过】才准退出课程！
         const isAllStrictlyCompleted = allSubItems.length > 0 && allSubItems.every(el => isItemCompleted(el) || isSubVideoFailed(getSubVideoKey(el)));
         if (!isAllStrictlyCompleted) {
-            console.warn("【神奇海螺】未全部打勾或跳过，暂不退出课程，等待状态确认...");
+            diagnosticConsole.warn("【神奇海螺】未全部打勾或跳过，暂不退出课程，等待状态确认...");
             state.isSwitching = false;
             return;
         }
@@ -2185,10 +2304,10 @@
         const allCoursesProg = getStorageItem(STORAGE_KEYS.mapProgress, 'jinpei_map_progress') || state.allCoursesProgress || "";
 
         if (hasExam) {
-            console.log("【神奇海螺】检测到本课程包含课后考试/测验节点，根据策略跳过考试，结束本课程！");
+            diagnosticConsole.log("【神奇海螺】检测到本课程包含课后考试/测验节点，根据策略跳过考试，结束本课程！");
             updateHUD("📝 本课视频已学完（包含考试，已自动跳过），正在切课...", undefined, undefined, "100%", undefined, allCoursesProg, "全部完成 (考试已跳过)", 100);
         } else {
-            console.log("【神奇海螺】严格核实：本课程全量子视频均已完成！准备返回课程目录选择新课程...");
+            diagnosticConsole.log("【神奇海螺】严格核实：本课程全量子视频均已完成！准备返回课程目录选择新课程...");
             updateHUD("本课程全部完成，正在返回学习目录切换新课程...", undefined, undefined, "100%", undefined, allCoursesProg, "全部完成", 100);
         }
 
@@ -2199,8 +2318,6 @@
         // 保持切换锁与操作锁，防止目录切换慢时连续重复点击
         state.isSwitching = true;
         state.isActionPending = true;
-        const sourceUrl = location.href;
-        const startedAt = Date.now();
 
         // 尝试点击侧边栏“学习目录”
         const catalogLi = Array.from(document.querySelectorAll('li, div, span, button'))
@@ -2208,7 +2325,7 @@
 
         if (catalogLi) {
             simulateHumanClick(catalogLi.closest('li, button, div, a'));
-            waitForCourseCatalog(sourceUrl, startedAt);
+            waitForCourseCatalog();
         } else {
             // 点击返回按钮
             const backBtn = Array.from(document.querySelectorAll('button, span, div, a'))
@@ -2219,7 +2336,7 @@
             } else {
                 location.href = CONFIG.myTaskUrl;
             }
-            waitForCourseCatalog(sourceUrl, startedAt);
+            waitForCourseCatalog();
         }
     }
 
@@ -2247,6 +2364,7 @@
         }
     }
 
+    recordDiagnostic('INFO', '脚本初始化，运行状态：' + (state.enabled ? '已启动' : '待启动'));
     enableAntiPause();
     setInterval(mainLoop, CONFIG.checkInterval);
     setTimeout(mainLoop, 1000);

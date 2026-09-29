@@ -56,6 +56,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
         querySelectorAll(selector) {
             if (selector.startsWith('div.group.cursor-pointer,')) return fixture.items;
             if (selector.startsWith('[class*="panelContent"]')) return fixture.courses;
+            if (selector.startsWith('button, .ant5-btn')) return fixture.entryButtons || [];
             if (selector === 'li, div, span, button') return [catalog];
             return [];
         }
@@ -71,13 +72,13 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
         sessionStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
         navigator: { locks: shared.locks || createLockManager() },
         localStorage: { get length() { return localStorageMap.size; }, key: index => [...localStorageMap.keys()][index] ?? null, getItem: key => localStorageMap.get(key) ?? null, setItem: (key, value) => localStorageMap.set(key, value), removeItem: key => localStorageMap.delete(key) },
-        console: { log() {}, warn() {}, error() {} }, Date: { now: () => now },
+        console: { log() {}, warn() {}, error() {} }, Date: class extends Date { static now() { return now; } },
         setTimeout(fn, delay) { const id = ++nextTimer; timers.set(id, { fn, at: now + delay }); return id; },
         clearTimeout(id) { timers.delete(id); }, setInterval() {},
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, getCurrentlyActiveCourses, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, getCurrentlyActiveCourses, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -413,12 +414,128 @@ test('目录切换超时暂停，不再次点击', async () => {
     assert.equal(t.timers.size, 0);
 });
 
-test('返回时路由发生变化即解除锁', async () => {
+test('返回时路由变化但任务卡片尚未加载仍等待，卡片加载后解除锁', async () => {
     const t = setup(); t.current.completed = true; t.fixture.items = [t.current];
     t.switchToNextSubVideoOrCourse(); t.context.location.href = 'https://pc.kmelearning.com/home/my/myTask';
     t.advance(500);
+    assert.equal(t.state.isActionPending, true);
+    t.fixture.items = [{ innerText: '学习地图\n进行中', offsetParent: {} }];
+    t.advance(500);
     assert.equal(t.state.isActionPending, false);
     assert.equal(t.state.isSwitching, false);
+});
+
+test('进入任务等学习入口实际出现，详情页跳转等目录实际出现', async () => {
+    const t = setup();
+    t.context.location.href = 'https://pc.kmelearning.com/home/my/myTask';
+    let clicks = 0;
+    t.fixture.items = [{ innerText: '学习地图\n进行中', children: [], offsetParent: {}, click() {
+        clicks++; t.context.location.href = 'https://pc.kmelearning.com/home/training/detail/1';
+    } }];
+    await t.mainLoop(); t.advance(6000); await t.mainLoop();
+    assert.equal(clicks, 1);
+    assert.equal(t.state.isActionPending, true);
+    t.fixture.entryButtons = [{ innerText: '进入学习', offsetParent: {}, click() {
+        clicks++; t.context.location.href = 'https://pc.kmelearning.com/home/training/study/1';
+        t.fixture.video = null;
+    } }];
+    t.advance(500);
+    assert.equal(t.state.isActionPending, false);
+    await t.mainLoop(); t.advance(6000); await t.mainLoop();
+    assert.equal(clicks, 2);
+    assert.equal(t.state.isActionPending, true);
+    t.fixture.courses = [{ innerText: '课程一\n2学时', children: [], offsetParent: {} }];
+    t.advance(500);
+    assert.equal(t.state.isActionPending, false);
+});
+
+test('进入课程等待视频可播放且小节目录就绪，不重复点击或提前触发看门狗', async () => {
+    const t = setup(); const video = t.fixture.video;
+    t.fixture.video = null;
+    let clicks = 0;
+    t.fixture.courses = [{ innerText: '课程一\n2学时', children: [], offsetParent: {}, click() { clicks++; } }];
+    await t.mainLoop(); t.advance(5000); await t.mainLoop();
+    assert.equal(clicks, 1); assert.equal(t.state.isActionPending, true);
+    video.duration = NaN; video.readyState = 1; t.fixture.video = video;
+    t.advance(500); await t.mainLoop();
+    assert.equal(t.state.isActionPending, true);
+    video.duration = 100; t.advance(500);
+    assert.equal(t.state.isActionPending, true);
+    video.readyState = 2; t.fixture.items = []; t.advance(500);
+    assert.equal(t.state.isActionPending, true);
+    t.fixture.items = [t.current]; t.advance(500);
+    assert.equal(t.state.isActionPending, false);
+    assert.equal(clicks, 1); assert.equal(t.context.location.reloads, 0);
+    assert.match(t.formatDiagnosticLogs(), /页面已就绪：课程播放器与小节目录加载/);
+});
+
+test('课程点击后立即就绪就立即解锁，不额外等待三秒', async () => {
+    const t = setup(); const video = t.fixture.video;
+    t.fixture.video = null;
+    t.fixture.courses = [{ innerText: '课程一\n2学时', children: [], offsetParent: {}, click() { t.fixture.video = video; } }];
+    await t.mainLoop(); t.advance(1000);
+    assert.equal(t.state.isActionPending, false);
+});
+
+test('页面就绪等待超时或检查异常会暂停并记录原因', async () => {
+    for (const error of [false, true]) {
+        const t = setup();
+        t.waitForPageReady('课程加载', () => { if (error) throw new Error('检查失败'); return false; }, 1000);
+        t.advance(1000);
+        assert.equal(t.state.enabled, false);
+        assert.equal(t.state.isActionPending, false);
+        assert.equal(t.timers.size, 0);
+        assert.match(t.formatDiagnosticLogs(), error ? /检查失败/ : /课程加载超时/);
+    }
+});
+
+test('手动暂停取消页面等待，迟到的就绪状态不会继续运行', async () => {
+    const t = setup(); let ready = false;
+    t.waitForPageReady('课程加载', () => ready);
+    t.pauseAutomation('手动暂停'); ready = true; t.advance(25000);
+    assert.equal(t.state.enabled, false);
+    assert.equal(t.timers.size, 0);
+    assert.doesNotMatch(t.formatDiagnosticLogs(), /页面已就绪：课程加载/);
+});
+
+test('诊断日志只保留200条，含上下文并在刷新后恢复，可清空', async () => {
+    const t = setup(); t.clearDiagnosticLogs();
+    t.state.currentTask = '任务一'; t.state.currentCourse = '课程一'; t.state.currentSubVideo = '小节一';
+    t.state.syncRetryCount = 2;
+    t.context.location.href += '?token=private#secret';
+    for (let i = 0; i < 205; i++) t.recordDiagnostic('INFO', '记录' + i);
+    const saved = JSON.parse(t.storage.get(t.STORAGE_KEYS.diagnostics));
+    assert.equal(saved.length, 200); assert.equal(saved[0].message, '记录5');
+    assert.equal(saved[199].course, '课程一'); assert.equal(saved[199].sub, '小节一');
+    assert.equal(saved[199].syncRetry, 2); assert.equal(saved[199].tab, t.TAB_ID);
+    assert.doesNotMatch(t.formatDiagnosticLogs(), /private|secret/);
+    const restored = setup([...t.storage]);
+    assert.match(restored.formatDiagnosticLogs(), /记录204/);
+    restored.clearDiagnosticLogs();
+    assert.equal(restored.storage.has(t.STORAGE_KEYS.diagnostics), false);
+    assert.doesNotMatch(restored.formatDiagnosticLogs(), /记录204/);
+});
+
+test('诊断日志复制成功有反馈，剪贴板不可用时选中文本供手动复制', async () => {
+    const t = setup(); let copied = ''; let selected = false;
+    t.context.navigator.clipboard = { async writeText(text) { copied = text; } };
+    assert.equal(await t.copyDiagnosticLogs(), true);
+    assert.match(copied, /神奇海螺诊断日志/);
+    assert.equal(t.context.document.getElementById('jinpei-diagnostics-notice').innerText, '已复制');
+    delete t.context.navigator.clipboard;
+    const output = t.context.document.getElementById('jinpei-diagnostics-output');
+    output.focus = () => {}; output.select = () => { selected = true; };
+    assert.equal(await t.copyDiagnosticLogs(), false);
+    assert.equal(selected, true);
+    assert.equal(t.context.document.getElementById('jinpei-diagnostics').open, true);
+});
+
+test('存储不可用或旧日志损坏时，诊断日志仍可在内存中使用', async () => {
+    const t = setup([['_kme_diagnostics', '{invalid']]);
+    t.context.sessionStorage.setItem = () => { throw new Error('quota'); };
+    t.recordDiagnostic('ERROR', new Error('播放器异常'));
+    assert.match(t.formatDiagnosticLogs(), /播放器异常/);
+    assert.equal(t.state.enabled, true);
 });
 
 test('手动暂停取消同步重试并恢复原生可见性', async () => {
@@ -737,6 +854,8 @@ test('[防检测 4] Shadow DOM 隔离：HUD 挂载至 _kme_tool_host 且内部 S
     assert.ok(attachedShadowRoot, '应成功为宿主 host 创建 attachShadow({ mode: "open" })');
     const hudInShadow = attachedShadowRoot.children.find(c => c.id === 'jinpei-hud');
     assert.ok(hudInShadow, 'HUD 面板应被安全封闭在 Shadow DOM 内部，避免外层 document.querySelectorAll 检索遍历');
+    assert.match(hudInShadow.innerHTML, /<details id="jinpei-diagnostics"[^>]*>/);
+    assert.doesNotMatch(hudInShadow.innerHTML, /<details[^>]*\bopen\b/);
 });
 
 test('[看门狗 1] 视频进度卡住 30 秒自动触发 location.reload()，且 reloadCount 正确累加', async () => {
