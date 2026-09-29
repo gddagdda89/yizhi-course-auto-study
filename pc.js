@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.5.1
+// @version      1.5.2
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
 // @homepageURL  https://github.com/gddagdda89/yizhi-course-auto-study
 // @supportURL   https://github.com/gddagdda89/yizhi-course-auto-study/issues
-// @updateURL    https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/main/pc.js
-// @downloadURL  https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/main/pc.js
+// @updateURL    https://v4.gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js
+// @downloadURL  https://v4.gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js
 // @match        https://pc.kmelearning.com/*
 // @grant        none
 // @run-at       document-idle
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log("【神奇海螺 v1.5.1】脚本初始化启动...");
+    console.log("【神奇海螺 v1.5.2】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -514,7 +514,7 @@
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
                     <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.1</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.2</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
