@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.6.1
+// @version      1.6.2
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.1】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.2】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -58,6 +58,7 @@
         diagnostics: '_kme_diagnostics', // 当前窗口的最近诊断日志（跨刷新）
         retryEpoch: '_kme_retry_epoch', // 通知暂停窗口清理旧的异常/处理缓存
         selectedTasks: '_kme_selected_tasks', // 用户明确选择的学习地图
+        taskCatalog: '_kme_task_catalog', // 只缓存任务 ID 和显示名称，供任意页面选择
     };
 
     function getStorageItem(keyName, legacyKey) {
@@ -780,7 +781,7 @@
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
                     <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.1</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.2</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -896,6 +897,7 @@
                     <div id="jinpei-task-list" style="max-height: 150px; overflow-y: auto; padding: 6px 0;"></div>
                     <button id="jinpei-task-all" type="button">全选</button>
                     <button id="jinpei-task-clear" type="button">清空</button>
+                    <button id="jinpei-task-refresh" type="button">刷新任务</button>
                     <span>暂停时可修改</span>
                 </details>
                 <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309;">
@@ -943,7 +945,11 @@
         getHUDElement('jinpei-task-all').addEventListener('click', () => {
             if (!state.enabled) { saveTaskSelection({ mode: 'all' }); renderTaskSelection(true); }
         });
-        getHUDElement('jinpei-task-selection').addEventListener('toggle', clampHUDPosition);
+        getHUDElement('jinpei-task-selection').addEventListener('toggle', () => {
+            clampHUDPosition();
+            if (getHUDElement('jinpei-task-selection').open) loadTaskCatalog().then(() => renderTaskSelection(true));
+        });
+        getHUDElement('jinpei-task-refresh').addEventListener('click', () => loadTaskCatalog(true).then(() => renderTaskSelection(true)));
         getHUDElement('jinpei-task-clear').addEventListener('click', () => {
             if (!state.enabled) { saveTaskSelection({ mode: 'ids', ids: [] }); renderTaskSelection(true); }
         });
@@ -1048,11 +1054,10 @@
         toggleBtn.addEventListener('click', () => {
             if (!state.enabled) {
                 const selection = getTaskSelection();
-                if (!selection && getCurrentMapId()) saveTaskSelection({ mode: 'ids', ids: [getCurrentMapId()] });
-                else if (!selection || (selection.mode === 'ids' && !selection.ids.length)) {
+                if (selection.mode === 'ids' && !selection.ids.length) {
                     renderTaskSelection(true);
                     getHUDElement('jinpei-task-selection').open = true;
-                    updateHUD('请先在任务中心勾选要学习的任务。');
+                    updateHUD('请先勾选要学习的任务。');
                     return;
                 }
             }
@@ -1104,7 +1109,7 @@
                     const activeCount = Object.keys(getActiveTabs()).length;
                     if (activeCount < next && typeof window !== 'undefined' && typeof window.open === 'function' && location.href.includes('/home/training/study/')) {
                         try {
-                            window.open(location.href, '_blank');
+                            window.open(CONFIG.myTaskUrl, '_blank');
                         } catch (_) {}
                     }
                 }
@@ -1120,7 +1125,7 @@
                         setConcurrencySetting(cur + 1);
                     }
                     if (typeof window !== 'undefined' && typeof window.open === 'function') {
-                        window.open(location.href, '_blank');
+                        window.open(CONFIG.myTaskUrl, '_blank');
                         updateHUD("正在唤起新窗口进行并发学习...");
                     }
                 } catch (err) {
@@ -2165,8 +2170,8 @@
     function getTaskSelection() {
         try {
             const value = JSON.parse(getLocalItem(STORAGE_KEYS.selectedTasks, 'null'));
-            return value?.mode === 'all' || (value?.mode === 'ids' && Array.isArray(value.ids)) ? value : null;
-        } catch (_) { return null; }
+            return value?.mode === 'all' || (value?.mode === 'ids' && Array.isArray(value.ids)) ? value : { mode: 'all' };
+        } catch (_) { return { mode: 'all' }; }
     }
 
     function saveTaskSelection(selection) {
@@ -2177,9 +2182,143 @@
         return getTaskIdFromCard(card) || 'title:' + (card.innerText || '').split('\n')[0].trim();
     }
 
-    function isTaskSelected(card) {
+    function isTaskKeySelected(key) {
         const selection = getTaskSelection();
-        return selection?.mode === 'all' || !!selection?.ids?.includes(taskSelectionKey(card));
+        return selection.mode === 'all' || selection.ids.includes(key);
+    }
+
+    let taskCatalogMemory = [];
+    let taskCatalogLoading = null;
+    let taskCatalogAttemptAt = -Infinity;
+    let taskCatalogMessage = '';
+    function taskCatalogDay() {
+        const date = new Date();
+        return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+    }
+
+    function getTaskCatalog() {
+        try {
+            const cache = JSON.parse(getLocalItem(STORAGE_KEYS.taskCatalog, 'null'));
+            if (cache?.day === taskCatalogDay() && Array.isArray(cache.entries)) return cache.entries;
+        } catch (_) {}
+        return taskCatalogMemory;
+    }
+
+    function saveTaskCatalog(entries, fetchedAt) {
+        taskCatalogMemory = [...new Map(entries.filter(item => item.key && item.title).map(item => [item.key, item])).values()];
+        if (fetchedAt === undefined) {
+            try { fetchedAt = JSON.parse(getLocalItem(STORAGE_KEYS.taskCatalog, 'null'))?.fetchedAt; } catch (_) {}
+        }
+        setLocalItem(STORAGE_KEYS.taskCatalog, JSON.stringify({ day: taskCatalogDay(), entries: taskCatalogMemory, fetchedAt }));
+    }
+
+    function rememberTaskCards(cards) {
+        if (!cards.length) return;
+        saveTaskCatalog([...getTaskCatalog(), ...cards.map(card => ({ key: taskSelectionKey(card),
+            title: (card.innerText || '').split('\n')[0].trim(), completed: isItemCompleted(card) }))]);
+    }
+
+    // 复用平台已登录的请求客户端，仅查询任务列表，不修改播放器或学习上报。
+    function getPlatformTaskClient() {
+        let requirePlatform;
+        if (!window.webpackChunkwmy_pc?.push) throw new Error('平台任务接口尚未就绪');
+        window.webpackChunkwmy_pc.push([[], {}, runtime => { requirePlatform = runtime; }]);
+        if (!requirePlatform) throw new Error('平台任务接口尚未就绪');
+        return { api: requirePlatform(90025).Z, base: requirePlatform(63601).kT };
+    }
+
+    async function loadTaskCatalog(force = false) {
+        if (taskCatalogLoading) return taskCatalogLoading;
+        try {
+            const cache = JSON.parse(getLocalItem(STORAGE_KEYS.taskCatalog, 'null'));
+            if (!force && cache?.day === taskCatalogDay() && typeof cache.fetchedAt === 'number' && Date.now() - cache.fetchedAt < 60000) return getTaskCatalog();
+        } catch (_) {}
+        if (!force && Date.now() - taskCatalogAttemptAt < 60000) return getTaskCatalog();
+        taskCatalogAttemptAt = Date.now();
+        taskCatalogMessage = '正在读取任务列表...';
+        taskCatalogLoading = (async () => {
+            let timer;
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            try {
+                const { api, base } = getPlatformTaskClient();
+                const date = new Date(); date.setHours(0, 0, 0, 0);
+                const collect = async () => {
+                    const entries = [];
+                    let seen = 0;
+                    for (let page = 1; page <= 20; page++) {
+                        const response = await api.post(base + '/calendar/api/pc/getPage',
+                            { date: date.getTime(), pageNo: page, pageSize: 100 }, controller ? { signal: controller.signal } : {});
+                        if (String(response?.code) !== '1000' || !Array.isArray(response.data?.records)) throw new Error('任务列表读取失败');
+                        const records = response.data.records;
+                        for (const item of records) {
+                            if (Number(item.taskType) === 1 && typeof item.taskId === 'string') {
+                                entries.push({ key: item.taskId, title: String(item.taskName || item.name || '学习地图') });
+                            }
+                        }
+                        seen += records.length;
+                        if (!records.length || seen >= Number(response.data.total || 0)) return entries;
+                    }
+                    throw new Error('任务列表过多，请在任务中心分批选择');
+                };
+                const entries = await Promise.race([collect(), new Promise((_, reject) => {
+                    timer = setTimeout(() => { controller?.abort(); reject(new Error('任务列表加载超时')); }, 5000);
+                })]);
+                saveTaskCatalog(entries, Date.now());
+                taskCatalogMessage = entries.length ? '' : '今天暂无学习地图。';
+            } catch (error) {
+                taskCatalogMessage = `${error.message}；可点击刷新，已有任务仍可选择。`;
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+            return getTaskCatalog();
+        })();
+        try { return await taskCatalogLoading; } finally { taskCatalogLoading = null; }
+    }
+
+    function getPendingTasks(cards = []) {
+        rememberTaskCards(cards);
+        const handled = getHandledMaps();
+        return getTaskCatalog().filter(task => isTaskKeySelected(task.key) && !task.completed &&
+            !handled.includes(task.key) && !(task.key.startsWith('title:') && handled.includes(task.title)));
+    }
+
+    function getTaskLoad(key) {
+        return Object.entries(getActiveTabs()).filter(([id, tab]) => id !== TAB_ID && tab.mapId === key).length;
+    }
+
+    function pickNextTask(tasks, excludedMap = '') {
+        return tasks.filter(task => task.key !== excludedMap && Number(getLocalItem('_kme_task_busy_' + task.key, '0')) <= Date.now())
+            .sort((a, b) => getTaskLoad(a.key) - getTaskLoad(b.key))[0];
+    }
+
+    function enterAssignedTask(task, card) {
+        state.isActionPending = true;
+        state.currentTask = task.title;
+        if (!registerTabHeartbeat('', '正在进入任务', task.key)) throw new Error('无法保存任务分配，已暂停');
+        updateHUD(`进入任务: ${task.title}`, task.title);
+        setManagedTimeout(() => {
+            if (!isTaskKeySelected(task.key)) { pauseAutomation('任务选择已改变，请重新开始。'); return; }
+            if (card) simulateHumanClick(card);
+            else location.href = CONFIG.myTaskUrl.replace('/my/myTask', '/training/detail/' + encodeURIComponent(task.key));
+            waitForPageReady('任务学习入口加载', () =>
+                (location.href.includes('/home/training/detail/') && !!getStudyEntryButton()) || isStudyPageReady());
+        }, 1000);
+    }
+
+    async function spawnTaskWorker() {
+        if (!state.enabled || !navigator.locks || typeof window.open !== 'function') return false;
+        return navigator.locks.request('_kme_worker_spawn', { ifAvailable: true }, lock => {
+            if (!lock || !state.enabled) return false;
+            const count = Object.keys(getActiveTabs()).length;
+            if (count >= getConcurrencySetting()) return false;
+            let pending;
+            try { pending = JSON.parse(getLocalItem('_kme_worker_pending', 'null')); } catch (_) {}
+            if (pending && pending.until > Date.now() && count <= pending.count) return false;
+            setLocalItem('_kme_worker_pending', JSON.stringify({ count, until: Date.now() + 10000 }));
+            const opened = window.open(CONFIG.myTaskUrl, '_blank');
+            if (!opened) removeLocalItem('_kme_worker_pending');
+            return !!opened;
+        });
     }
 
     let taskSelectionRenderKey = '';
@@ -2187,32 +2326,36 @@
         const panel = getHUDElement('jinpei-task-selection');
         const list = getHUDElement('jinpei-task-list');
         if (!panel || !list) return;
-        const onTasks = location.href.includes('/home/my/myTask');
-        panel.style.display = onTasks ? 'block' : 'none';
-        if (!onTasks) return;
-        const cards = getTaskCards();
+        panel.style.display = 'block';
+        if (location.href.includes('/home/my/myTask')) rememberTaskCards(getTaskCards());
+        const tasks = getTaskCatalog();
         getHUDElement('jinpei-task-all').disabled = state.enabled;
         getHUDElement('jinpei-task-clear').disabled = state.enabled;
-        const renderKey = JSON.stringify([state.enabled, getTaskSelection(), cards.map(card => [taskSelectionKey(card), card.innerText])]);
+        const renderKey = JSON.stringify([state.enabled, getTaskSelection(), tasks, taskCatalogMessage]);
         if (!force && renderKey === taskSelectionRenderKey) return;
         taskSelectionRenderKey = renderKey;
         list.textContent = '';
-        for (const card of cards) {
+        if (!tasks.length || taskCatalogMessage) {
+            const hint = document.createElement('div');
+            hint.textContent = taskCatalogMessage || '默认全选，展开或点击刷新即可读取任务列表。';
+            list.appendChild(hint);
+        }
+        for (const task of tasks) {
             const label = document.createElement('label');
             label.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0;';
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
-            checkbox.checked = isTaskSelected(card);
+            checkbox.checked = isTaskKeySelected(task.key);
             checkbox.disabled = state.enabled;
             const text = document.createElement('span');
             text.style.cssText = 'min-width:0;overflow-wrap:anywhere;';
-            text.textContent = (card.innerText || '').split('\n')[0];
+            text.textContent = task.title;
             label.append(checkbox, text);
             checkbox.addEventListener('change', () => {
                 if (state.enabled) return;
                 const previous = getTaskSelection();
-                const ids = new Set(previous?.mode === 'all' ? cards.map(taskSelectionKey) : previous?.ids || []);
-                if (checkbox.checked) ids.add(taskSelectionKey(card)); else ids.delete(taskSelectionKey(card));
+                const ids = new Set(previous.mode === 'all' ? getTaskCatalog().map(item => item.key) : previous.ids);
+                if (checkbox.checked) ids.add(task.key); else ids.delete(task.key);
                 saveTaskSelection({ mode: 'ids', ids: [...ids] });
             });
             list.appendChild(label);
@@ -2234,58 +2377,51 @@
     }
 
     // 流程 B: 任务页 (myTask) 检查与自动进入
-    function handleMyTaskPage() {
-        if (state.isActionPending) return;
-        updateHUD("正在检查我的任务列表...");
-
-        const cards = getTaskCards();
-
-        if (cards.length === 0) {
-            updateHUD("等待任务列表加载...");
-            return;
-        }
-
-        if (!getTaskSelection() || (getTaskSelection().mode === 'ids' && !getTaskSelection().ids.length)) {
-            pauseAutomation('请先勾选要学习的任务，再点击开始。');
-            renderTaskSelection(true);
-            return;
-        }
-
-        const handledMaps = getHandledMaps();
-
-        // 寻找第一个未完成且未被跳过处理的任务（防止跳过考试后因“进行中”死循环重入）
-        let targetCard = null;
-        for (const card of cards) {
-            if (!isTaskSelected(card)) continue;
-            const title = (card.innerText.split('\n')[0] || '').trim();
-            const id = getTaskIdFromCard(card);
-            const isHandled = id ? handledMaps.includes(id) : title && handledMaps.includes(title);
-            if (!isItemCompleted(card) && !isHandled) {
-                targetCard = card;
-                break;
+    let taskDispatchPending = false;
+    async function handleMyTaskPage() {
+        if (state.isActionPending || taskDispatchPending) return;
+        taskDispatchPending = true;
+        const url = location.href;
+        const generation = claimGeneration;
+        try {
+            updateHUD("正在检查我的任务列表...");
+            await loadTaskCatalog();
+            if (!state.enabled || location.href !== url || generation !== claimGeneration) return;
+            const cards = getTaskCards();
+            const tasks = getPendingTasks(cards);
+            if (!cards.length && !getTaskCatalog().length) {
+                updateHUD("等待任务列表加载...");
+                return;
             }
-        }
+            if (getTaskSelection().mode === 'ids' && !getTaskSelection().ids.length) {
+                pauseAutomation('请先勾选要学习的任务，再点击开始。');
+                renderTaskSelection(true);
+                return;
+            }
 
-        if (targetCard) {
-            state.isActionPending = true;
-            const title = (targetCard.innerText.split('\n')[0] || '学习任务').trim();
-            state.currentTask = title;
-            updateHUD(`进入任务: ${title}`, title);
-            diagnosticConsole.log("【神奇海螺】找到未完成任务，正在点击进入:", title);
-            setManagedTimeout(() => {
-                if (!isTaskSelected(targetCard)) { pauseAutomation('任务选择已改变，请重新开始。'); return; }
-                simulateHumanClick(targetCard);
-                waitForPageReady('任务学习入口加载', () =>
-                    (location.href.includes('/home/training/detail/') && !!getStudyEntryButton()) || isStudyPageReady());
-            }, 1000);
-        } else {
-            const outcomes = getCourseOutcomes();
-            const skipped = outcomes.filter(value => value.status === 'skipped').length;
-            const exams = outcomes.filter(value => value.status === 'exam').length;
-            pauseAutomation(skipped || exams
-                ? `本轮任务处理结束：异常跳过 ${skipped} 门，待考试 ${exams} 门；平台尚未全部完成。`
-                : '本轮任务检查结束；已处理的历史任务请以平台完成状态为准。');
-        }
+            if (tasks.length) {
+                if (!navigator.locks) throw new Error('浏览器不支持跨窗口任务调度，请使用新版 Chrome');
+                await navigator.locks.request('_kme_task_scheduler', () => {
+                    if (!state.enabled || location.href !== url || generation !== claimGeneration) return;
+                    const task = pickNextTask(getPendingTasks(cards));
+                    if (task) enterAssignedTask(task, cards.find(card => taskSelectionKey(card) === task.key));
+                    else {
+                        registerTabHeartbeat('', '等待其他任务空闲', '');
+                        updateHUD('已选任务暂时没有空闲课程，等待其他窗口推进...');
+                    }
+                });
+            } else {
+                const outcomes = getCourseOutcomes();
+                const skipped = outcomes.filter(value => value.status === 'skipped').length;
+                const exams = outcomes.filter(value => value.status === 'exam').length;
+                pauseAutomation(skipped || exams
+                    ? `本轮任务处理结束：异常跳过 ${skipped} 门，待考试 ${exams} 门；平台尚未全部完成。`
+                    : '本轮任务检查结束；已处理的历史任务请以平台完成状态为准。');
+                if (window.opener && window.opener !== window) window.close();
+            }
+        } catch (error) {
+            if (state.enabled) pauseAutomation(error.message || '任务调度失败');
+        } finally { taskDispatchPending = false; }
     }
 
     // 流程 C: 任务详情页 (training/detail)
@@ -2340,7 +2476,7 @@
         const selection = getTaskSelection();
         const mapId = getCurrentMapId();
         if (selection?.mode === 'ids' && mapId && !selection.ids.includes(mapId) && !selection.ids.includes('title:' + state.currentTask)) {
-            pauseAutomation('当前学习地图未勾选，已暂停。请在任务中心修改选择。');
+            pauseAutomation('当前学习地图未勾选，已暂停。请在 HUD 中修改选择。');
             return;
         }
         const pageUrl = location.href;
@@ -2398,7 +2534,7 @@
                     unregisterTab();
 
                     // 如果当前窗口是由主窗口弹出的并发子窗口，学完后自动关闭本窗口释放资源
-                    if (typeof window !== 'undefined' && window.opener && window.opener !== window) {
+                    if (typeof window !== 'undefined' && window.opener && window.opener !== window && !getPendingTasks().length) {
                         diagnosticConsole.log("【神奇海螺】并发子窗口已学完全部课程，自动关闭窗口释放资源...");
                         setManagedTimeout(() => {
                             try {
@@ -2448,12 +2584,12 @@
                         return c !== targetCourse && !isCourseBusyByOtherTab(cKey, cName, mapId);
                     });
 
-                    if (concurrency > 1 && activeTabsCount < concurrency && availableRemaining.length > 0) {
+                    if (concurrency > 1 && activeTabsCount < concurrency && (availableRemaining.length > 0 || pickNextTask(getPendingTasks(), mapId))) {
                         if (!state.lastTabSpawnTime || Date.now() - state.lastTabSpawnTime > 4000) {
                             state.lastTabSpawnTime = Date.now();
                             try {
                                 if (typeof window !== 'undefined' && typeof window.open === 'function') {
-                                    const newWin = window.open(location.href, '_blank');
+                                    const newWin = await spawnTaskWorker();
                                     if (newWin) {
                                         diagnosticConsole.log(`【神奇海螺】当前已开启 ${activeTabsCount + 1}/${concurrency} 路并发学习！`);
                                     }
@@ -2464,6 +2600,7 @@
                         }
                     }
 
+                    if (!state.enabled || generation !== claimGeneration || location.href !== pageUrl) return;
                     state.isActionPending = true;
                     const cName = (targetCourse.innerText || '').split('\n')[0].trim();
                     state.currentCourse = cName;
@@ -2475,6 +2612,23 @@
                             !!document.querySelector('video') && isStudyPageReady());
                     }, 1000);
                 } else {
+                    const allBusyHere = uncompletedCourses.length && uncompletedCourses.every(c =>
+                        isCourseBusyByOtherTab(getCourseKeyFromItem(c), (c.innerText || '').split('\n')[0].trim(), mapId));
+                    if (allBusyHere) {
+                        setLocalItem('_kme_task_busy_' + mapId, String(Date.now() + 20000));
+                        await loadTaskCatalog();
+                        if (!state.enabled || generation !== claimGeneration || location.href !== pageUrl) return;
+                        if (pickNextTask(getPendingTasks(), mapId)) {
+                            const occupied = Object.values(getActiveTabs()).filter(tab => tab.courseKey).length;
+                            if (occupied < concurrency) {
+                                state.isActionPending = true;
+                                unregisterTab();
+                                updateHUD('当前任务课程已被其他窗口领取，转到其他已选任务...');
+                                location.href = CONFIG.myTaskUrl;
+                                return;
+                            }
+                        }
+                    }
                     // 没有找到可用课程，但地图尚未全部学完：说明剩余未完成课程正由其他并发窗口正在学习中
                     if (!registerTabHeartbeat("", "等待并发窗口完成中...", mapId)) {
                         throw new Error('无法保存窗口状态，已停止学习');
@@ -2775,6 +2929,13 @@
         // 未手动启动时，不执行任何自动化逻辑（包括不自动弹窗确认、不自动播放、不自动跳转）
         if (!state.enabled) return;
 
+        loadTaskCatalog().then(() => {
+            renderTaskSelection();
+            if (state.enabled && currentClaim && pickNextTask(getPendingTasks(), getCurrentMapId())) {
+                spawnTaskWorker().catch(error => diagnosticConsole.warn('并发窗口唤起失败:', error.message));
+            }
+        });
+
         autoDismissDialogs();
 
         const url = location.href;
@@ -2782,7 +2943,7 @@
         if (url.includes('/home/index') || url.includes('/home/login') || url.includes('/home/portal')) {
             handleLoginAndIndex();
         } else if (url.includes('/home/my/myTask')) {
-            handleMyTaskPage();
+            return handleMyTaskPage();
         } else if (url.includes('/home/training/detail/')) {
             handleDetailPage();
         } else if (url.includes('/home/training/study/') || url.includes('/home/courseplay/')) {

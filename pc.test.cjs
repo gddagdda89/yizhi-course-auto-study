@@ -80,7 +80,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, isTaskSelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -95,6 +95,86 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
 }
 
 const settleLocks = () => new Promise(resolve => setImmediate(resolve));
+
+function taskCardsFor(t) {
+    const cards = ['1', '2'].map(id => ({ innerText: '学习地图' + id + '\n进行中', offsetParent: {}, clicks: 0,
+        getAttribute: name => name === 'data-tp-id' ? id : null, click() { this.clicks++; } }));
+    const original = t.context.document.querySelectorAll.bind(t.context.document);
+    t.context.document.querySelectorAll = selector => selector === 'div.group.cursor-pointer, .grid > div' ? cards : original(selector);
+    t.context.location.href = 'https://pc.kmelearning.com/home/my/myTask';
+    return cards;
+}
+
+test('首次无设置时默认全选，已有手动选择保持不变', () => {
+    const t = setup(); t.localStorageMap.delete(t.STORAGE_KEYS.selectedTasks);
+    assert.equal(t.getTaskSelection().mode, 'all');
+    t.saveTaskSelection({ mode: 'ids', ids: ['2'] });
+    assert.equal(t.isTaskKeySelected('1'), false);
+    assert.equal(t.isTaskKeySelected('2'), true);
+});
+
+test('多个窗口同时分配任务会分流到不同地图，已选范围和忙碌冷却都生效', async () => {
+    const { a, b } = twoWindows();
+    const ca = taskCardsFor(a), cb = taskCardsFor(b);
+    await Promise.all([a.mainLoop(), b.mainLoop()]);
+    a.advance(1000); b.advance(1000);
+    assert.deepEqual(ca.map(c => c.clicks), [1, 0]);
+    assert.deepEqual(cb.map(c => c.clicks), [0, 1]);
+    assert.equal(a.getActiveTabs()[a.TAB_ID].mapId, '1');
+    assert.equal(b.getActiveTabs()[b.TAB_ID].mapId, '2');
+    a.localStorageMap.set('_kme_task_busy_1', '20000');
+    assert.equal(a.pickNextTask(a.getTaskCatalog()).key, '2');
+});
+
+test('同一地图的剩余课程被占用时转到其他任务，并发满时继续等待', async () => {
+    for (const concurrency of [1, 2]) {
+        const { a, b } = twoWindows(); a.setConcurrencySetting(concurrency);
+        a.saveTaskCatalog([{ key: '1', title: '任务一' }, { key: '2', title: '任务二' }]);
+        assert.equal(await b.tryClaimCourseSlot('课程一', '课程一', '1'), true);
+        a.fixture.video = null;
+        a.fixture.courses = [{ innerText: '课程一\n2学时', children: [], offsetParent: {} }];
+        await a.mainLoop();
+        assert.equal(a.context.location.href.includes('/home/my/myTask'), concurrency === 2);
+        assert.equal(a.state.enabled, true);
+    }
+});
+
+test('跨任务也共用课程并发上限，不按地图各自计算名额', async () => {
+    const { a, b } = twoWindows(); a.setConcurrencySetting(1);
+    assert.equal(await a.tryClaimCourseSlot('101', '课一', '1'), true);
+    assert.equal(await b.tryClaimCourseSlot('201', '课二', '2'), false);
+});
+
+test('同时请求多开只打开一个待注册窗口，且从任务中心领取', async () => {
+    const { a, b } = twoWindows(); a.setConcurrencySetting(3);
+    await Promise.all([a.spawnTaskWorker(), b.spawnTaskWorker()]);
+    assert.equal(a.openedUrls.length + b.openedUrls.length, 1);
+    assert.equal([...a.openedUrls, ...b.openedUrls][0], a.CONFIG.myTaskUrl);
+});
+
+test('子窗口学完当前地图后，存在其他任务则继续而不关闭', async () => {
+    const t = setup(); t.context.window.opener = {};
+    t.saveTaskCatalog([{ key: '1', title: '任务一' }, { key: '2', title: '任务二' }]);
+    t.fixture.video = null; t.fixture.courses = [{ innerText: '已完成课程\n100%', children: [], offsetParent: {} }];
+    await t.mainLoop(); t.advance(2500);
+    assert.equal(t.context.window.closed, false);
+    assert.equal(t.context.location.href, t.CONFIG.myTaskUrl);
+});
+
+test('任务列表接口分页读取并缓存，失败或超时保留旧列表且不暂停视频', async () => {
+    const t = setup(); let calls = 0;
+    t.context.window.webpackChunkwmy_pc = { push(chunk) { chunk[2](id => id === 90025 ? { Z: { async post(_url, body) {
+        calls++;
+        return { code: '1000', data: { total: 2, records: [{ taskType: 1, taskId: String(body.pageNo), taskName: '任务' + body.pageNo }] } };
+    } } } : { kT: '/web-student' }); } };
+    await t.loadTaskCatalog(true);
+    assert.equal(calls, 2); assert.equal(t.getTaskCatalog().length, 2);
+    t.context.window.webpackChunkwmy_pc = { push(chunk) { chunk[2](id => id === 90025 ? { Z: { post() { return new Promise(() => {}); } } } : { kT: '/web-student' }); } };
+    const pending = t.loadTaskCatalog(true); t.advance(5000); await pending;
+    assert.equal(t.getTaskCatalog().length, 2);
+    assert.equal(t.state.enabled, true);
+    assert.equal(t.fixture.video.paused, false);
+});
 
 test('平台 React 数据中的小节和课程 ID 优先于标题，改名不改变小节键', () => {
     const t = setup();
@@ -137,7 +217,7 @@ test('手动切换到另一课程会释放旧 ID，再按新 ID 领取', async (
     assert.equal(t.getActiveTabs()[t.TAB_ID].courseKey, '102');
 });
 
-test('任务页只点击选中的地图，空选择不会开始自动流转', () => {
+test('任务页只点击选中的地图，空选择不会开始自动流转', async () => {
     for (const ids of [[], ['2']]) {
         const t = setup(); t.context.location.href = 'https://pc.kmelearning.com/home/my/myTask';
         const cards = ['1', '2'].map(id => ({ innerText: '学习地图' + id + '\n进行中', offsetParent: {}, clicks: 0,
@@ -145,7 +225,7 @@ test('任务页只点击选中的地图，空选择不会开始自动流转', ()
         const original = t.context.document.querySelectorAll.bind(t.context.document);
         t.context.document.querySelectorAll = selector => selector === 'div.group.cursor-pointer, .grid > div' ? cards : original(selector);
         t.saveTaskSelection({ mode: 'ids', ids });
-        t.handleMyTaskPage(); t.advance(1000);
+        await t.handleMyTaskPage(); t.advance(1000);
         assert.equal(cards[0].clicks, 0);
         assert.equal(cards[1].clicks, ids.length ? 1 : 0);
         if (!ids.length) assert.equal(t.state.enabled, false);
@@ -1095,7 +1175,7 @@ test('[防检测 4] Shadow DOM 隔离：HUD 挂载至 _kme_tool_host 且内部 S
     t.context.document.getElementById = (id) => {
         if (id === '_kme_tool_host') return null;
         if (id === 'jinpei-hud') return null;
-        return { style: {}, innerText: '', addEventListener() {} };
+        return { style: {}, innerText: '', addEventListener() {}, appendChild() {} };
     };
     t.context.document.createElement = (tag) => {
         if (tag === 'div') {
