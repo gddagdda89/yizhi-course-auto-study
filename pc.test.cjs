@@ -34,6 +34,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     const timers = new Map();
     const storage = new Map([['jinpei_auto_running', 'true'], ...initialStorage]);
     const localStorageMap = shared.storage || new Map([...initialLocalStorage]);
+    if (!localStorageMap.has('_kme_selected_tasks')) localStorageMap.set('_kme_selected_tasks', JSON.stringify({ mode: 'all' }));
     const openedUrls = [];
     const video = { paused: false, muted: true, playbackRate: 1, currentTime: 0, duration: 100, ended: false,
         plays: 0, pause() { this.paused = true; }, play() { this.plays++; this.paused = false; this.ended = false; return Promise.resolve(); } };
@@ -44,12 +45,13 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     const hud = new Map();
     const catalog = { innerText: '学习目录', children: [], closest() { return { click() { fixture.catalogClicks++; } }; } };
     class Document {
+        createElement() { return { style: {}, append() {}, appendChild() {}, addEventListener() {} }; }
         get hidden() { return true; }
         get visibilityState() { return 'hidden'; }
         get webkitVisibilityState() { return 'hidden'; }
         addEventListener() {}
         getElementById(id) {
-            if (!hud.has(id)) hud.set(id, { style: {}, innerText: '', addEventListener() {}, title: '' });
+            if (!hud.has(id)) hud.set(id, { style: {}, innerText: '', addEventListener() {}, appendChild() {}, title: '' });
             return hud.get(id);
         }
         querySelector(selector) { return selector === 'video' ? fixture.video : null; }
@@ -78,7 +80,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, getCurrentlyActiveCourses, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, isTaskSelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -93,6 +95,72 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
 }
 
 const settleLocks = () => new Promise(resolve => setImmediate(resolve));
+
+test('平台 React 数据中的小节和课程 ID 优先于标题，改名不改变小节键', () => {
+    const t = setup();
+    t.current.__reactInternalInstance$test = { memoizedProps: {}, return: { memoizedProps: { section: { id: '201', courseId: '101' } } } };
+    t.next.__reactFiber$test = { memoizedProps: { section: { id: '202', courseId: '101' } } };
+    const before = t.getSubVideoKey(t.current);
+    assert.equal(t.getCurrentCourseId(), '101', 'study 路由中的地图 ID 不能用作课程 ID');
+    assert.equal(before, '1::101::201');
+    assert.notEqual(before, t.getSubVideoKey(t.next));
+    t.state.currentCourse = '改名课程'; t.current.innerText = '改名小节\n00:01:40';
+    assert.equal(t.getSubVideoKey(t.current), before);
+});
+
+test('同名不同 ID 的课程结果互不污染，旧标题缓存也不跳过另一门课程', () => {
+    const t = setup(); t.state.currentCourse = '同名课程';
+    t.current.getAttribute = name => name === 'data-course-id' ? '101' : null;
+    t.saveCourseOutcome('completed'); t.markCourseHandled('1', '同名课程');
+    const other = { innerText: '同名课程\n2学时', getAttribute: name => name === 'data-course-id' ? '102' : null };
+    assert.equal(t.getCourseDisposition(other, '1'), 'pending');
+    assert.deepEqual(Array.from(t.getCourseOutcomes()[0].aliases), ['101']);
+});
+
+test('同名不同 ID 可并发，改名后仍不能重复领取同一个 ID', async () => {
+    const { a, b } = twoWindows();
+    assert.equal(await a.tryClaimCourseSlot('101', '同名课程', '1'), true);
+    assert.equal(await b.tryClaimCourseSlot('102', '同名课程', '1'), true);
+    b.unregisterTab(); await settleLocks();
+    assert.equal(await b.tryClaimCourseSlot('101', '改名课程', '1'), false);
+});
+
+test('手动切换到另一课程会释放旧 ID，再按新 ID 领取', async () => {
+    const t = setup(); t.current.getAttribute = name => name === 'data-course-id' ? '102' : null;
+    assert.equal(await t.tryClaimCourseSlot('101', '旧课', '1'), true);
+    t.setManagedTimeout(() => { t.next.clicks++; }, 1000);
+    await t.mainLoop(); await settleLocks();
+    assert.equal(t.getActiveTabs()[t.TAB_ID], undefined);
+    t.advance(1000);
+    assert.equal(t.next.clicks, 0, '旧课程的延迟切节不能影响手动切换后的课程');
+    await t.mainLoop(); await settleLocks();
+    assert.equal(t.getActiveTabs()[t.TAB_ID].courseKey, '102');
+});
+
+test('任务页只点击选中的地图，空选择不会开始自动流转', () => {
+    for (const ids of [[], ['2']]) {
+        const t = setup(); t.context.location.href = 'https://pc.kmelearning.com/home/my/myTask';
+        const cards = ['1', '2'].map(id => ({ innerText: '学习地图' + id + '\n进行中', offsetParent: {}, clicks: 0,
+            getAttribute: name => name === 'data-tp-id' ? id : null, click() { this.clicks++; } }));
+        const original = t.context.document.querySelectorAll.bind(t.context.document);
+        t.context.document.querySelectorAll = selector => selector === 'div.group.cursor-pointer, .grid > div' ? cards : original(selector);
+        t.saveTaskSelection({ mode: 'ids', ids });
+        t.handleMyTaskPage(); t.advance(1000);
+        assert.equal(cards[0].clicks, 0);
+        assert.equal(cards[1].clicks, ids.length ? 1 : 0);
+        if (!ids.length) assert.equal(t.state.enabled, false);
+    }
+});
+
+test('任务选择跨窗口共享，手动进入未勾选地图会暂停', async () => {
+    const { a, b } = twoWindows();
+    a.saveTaskSelection({ mode: 'ids', ids: ['2'] });
+    assert.deepEqual(Array.from(b.getTaskSelection().ids), ['2']);
+    await b.mainLoop();
+    assert.equal(b.state.enabled, false);
+    assert.equal(b.fixture.video.plays, 0);
+    assert.match(b.state.statusText, /未勾选/);
+});
 
 function platformRecords(t, learnedSeconds) {
     const fixture = { learnedSeconds, busy: false, mode: 'catalog', recordClicks: 0, catalogClicks: 0 };
@@ -922,6 +990,7 @@ test('[防检测 2] 拟人化点击：simulateHumanClick 派发完整鼠标事�
     const t = setup();
     const dispatchedEvents = [];
     let nativeClicked = 0;
+    let handledClicks = 0;
 
     const mockButton = {
         getBoundingClientRect() {
@@ -929,10 +998,12 @@ test('[防检测 2] 拟人化点击：simulateHumanClick 派发完整鼠标事�
         },
         dispatchEvent(evt) {
             dispatchedEvents.push(evt);
+            if (evt.type === 'click') handledClicks++;
             return true;
         },
         click() {
             nativeClicked++;
+            handledClicks++;
         }
     };
 
@@ -946,7 +1017,8 @@ test('[防检测 2] 拟人化点击：simulateHumanClick 派发完整鼠标事�
 
     t.simulateHumanClick(mockButton);
 
-    assert.equal(nativeClicked, 1, '应执行基础的 native click');
+    assert.equal(nativeClicked, 0, '派发 click 后不能再调用 .click()');
+    assert.equal(handledClicks, 1, '页面的点击处理只能触发一次');
     const eventTypes = dispatchedEvents.map(e => e.type);
     assert.deepEqual(eventTypes, ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click']);
 
@@ -954,6 +1026,26 @@ test('[防检测 2] 拟人化点击：simulateHumanClick 派发完整鼠标事�
     for (const evt of dispatchedEvents) {
         assert.ok(evt.clientX >= 100 && evt.clientX <= 180, `clientX ${evt.clientX} 应在元素水平区域内`);
         assert.ok(evt.clientY >= 200 && evt.clientY <= 240, `clientY ${evt.clientY} 应在元素垂直区域内`);
+    }
+});
+
+test('点击被页面取消默认行为时，不通过 .click() 再触发一次', () => {
+    const t = setup(); let handled = 0; let nativeClicked = 0;
+    t.context.MouseEvent = class { constructor(type) { this.type = type; } };
+    t.simulateHumanClick({
+        dispatchEvent(event) { if (event.type === 'click') { handled++; return false; } return true; },
+        click() { nativeClicked++; handled++; },
+    });
+    assert.equal(handled, 1);
+    assert.equal(nativeClicked, 0);
+});
+
+test('鼠标事件不可用或派发前失败时，回退 .click() 一次以保持课程推进', () => {
+    for (const unavailable of ['missing', 'throws']) {
+        const t = setup(); let clicks = 0;
+        if (unavailable === 'throws') t.context.MouseEvent = class { constructor() { throw new Error('MouseEvent unavailable'); } };
+        t.simulateHumanClick({ dispatchEvent() {}, click() { clicks++; } });
+        assert.equal(clicks, 1);
     }
 });
 
