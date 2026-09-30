@@ -78,7 +78,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, getCurrentlyActiveCourses, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, getCurrentlyActiveCourses, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -93,6 +93,181 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
 }
 
 const settleLocks = () => new Promise(resolve => setImmediate(resolve));
+
+function platformRecords(t, learnedSeconds) {
+    const fixture = { learnedSeconds, busy: false, mode: 'catalog', recordClicks: 0, catalogClicks: 0 };
+    const original = t.context.document.querySelectorAll.bind(t.context.document);
+    const recordTab = { innerText: '记录', offsetParent: {}, getAttribute() { return String(fixture.mode === 'record'); }, click() { fixture.mode = 'record'; fixture.recordClicks++; } };
+    const catalogTab = { innerText: 'Tab 1 of 3\n目录', childNodes: [{ nodeType: 1 }, { nodeType: 3, textContent: '目录' }], offsetParent: {}, getAttribute() { return String(fixture.mode === 'catalog'); }, click() { if (!fixture.blockCatalog) fixture.mode = 'catalog'; fixture.catalogClicks++; } };
+    t.context.document.querySelectorAll = selector => {
+        if (selector === '[role="tab"], .ant5-tabs-tab-btn, .ant-tabs-tab-btn') return [catalogTab, recordTab];
+        if (selector.startsWith('[class*="course-records"]')) {
+            const n = fixture.learnedSeconds;
+            const clock = n === null ? '未知' : [Math.floor(n / 3600), Math.floor(n / 60) % 60, n % 60].map(v => String(v).padStart(2, '0')).join(':');
+            return fixture.mode === 'record' ? [{ innerText: '学习总时长\n' + clock, offsetParent: {}, querySelector() { return fixture.busy ? {} : null; } }] : [];
+        }
+        if (selector.startsWith('div.group.cursor-pointer,') && fixture.mode === 'record') return [];
+        return original(selector);
+    };
+    return fixture;
+}
+
+test('异常跳过与待考试不计入已完成，已打勾的平台状态优先', async () => {
+    const t = setup(); t.state.currentCourse = '异常课程';
+    t.markSubVideoFailed('1::异常课程::当前小节');
+    const item = { innerText: '异常课程\n2学时', children: [], offsetParent: {} };
+    assert.equal(t.getCourseDisposition(item, '1'), 'skipped');
+    t.state.currentCourse = '考试课程'; t.saveCourseOutcome('exam');
+    assert.equal(t.getCourseDisposition({ ...item, innerText: '考试课程\n2学时' }, '1'), 'exam');
+    assert.equal(t.getCourseDisposition({ ...item, querySelector() { return {}; } }, '1'), 'completed');
+    t.fixture.video = null; t.fixture.courses = [item, { ...item, innerText: '考试课程\n2学时' }];
+    await t.mainLoop();
+    assert.match(t.storage.get(t.STORAGE_KEYS.mapProgress), /0 \/ 2 门 \(0%\).*异常 1.*待考试 1/);
+    assert.match(t.state.statusText, /本轮处理结束/);
+    assert.doesNotMatch(t.state.statusText, /全部学完|确认完成/);
+});
+
+test('课程全部为异常跳过时保存异常结果，绝不标为已完成', async () => {
+    const t = setup(); t.state.currentCourse = '异常课程'; t.fixture.items = [t.current];
+    t.markSubVideoFailed('1::异常课程::当前小节');
+    t.switchToNextSubVideoOrCourse();
+    assert.equal(t.getCourseOutcomes()[0].status, 'skipped');
+    assert.equal(t.getCourseOutcomes()[0].failedSubKeys.length, 1);
+    assert.match(t.state.statusText, /异常跳过/);
+});
+
+test('重试异常只清理异常和旧缓存，保留已完成及待考试，其他窗口同步缓存', async () => {
+    const { a, b } = twoWindows();
+    a.state.currentCourse = '异常课程'; a.markSubVideoFailed('1::异常课程::小节一'); a.markCourseHandled('1', '异常课程');
+    a.state.currentCourse = '完成课程'; a.saveCourseOutcome('completed'); a.markCourseHandled('1', '完成课程');
+    a.state.currentCourse = '考试课程'; a.saveCourseOutcome('exam'); a.markCourseHandled('1', '考试课程');
+    a.markMapHandled('1');
+    b.storage.set(b.STORAGE_KEYS.failedVideos, JSON.stringify(['1::异常课程::小节一']));
+    b.storage.set(b.STORAGE_KEYS.handledCourses, JSON.stringify(['1::异常课程']));
+    b.state.enabled = false;
+    assert.equal(a.retrySkippedCourses(), true);
+    await b.mainLoop();
+    assert.equal(a.getCourseOutcomes().length, 2);
+    assert.equal(a.getFailedSubVideos().length, 0);
+    assert.equal(b.getFailedSubVideos().length, 0);
+    assert.equal(b.isCourseHandled('1', '异常课程'), false);
+    assert.equal(a.isCourseHandled('1', '完成课程'), true);
+    assert.equal(a.isCourseHandled('1', '考试课程'), true);
+    assert.equal(a.getHandledMaps().includes('1'), false);
+    assert.equal(a.state.enabled, false);
+});
+
+test('其他窗口仍在学习时拒绝清理异常记录', async () => {
+    const { a, b } = twoWindows();
+    a.state.currentCourse = '异常课程'; a.markSubVideoFailed('1::异常课程::小节一');
+    assert.equal(await b.tryClaimCourseSlot('c2', '其他课程', '1'), true);
+    assert.equal(a.retrySkippedCourses(), false);
+    assert.equal(a.getFailedSubVideos().length, 1);
+});
+
+test('重试同时清除旧版未核验课程所属地图的处理缓存，允许重新进入', () => {
+    const t = setup();
+    t.state.currentCourse = '异常课程'; t.markSubVideoFailed('1::异常课程::小节一');
+    t.markCourseHandled('2', '旧版课程'); t.markMapHandled('1'); t.markMapHandled('2');
+    assert.equal(t.retrySkippedCourses(), true);
+    assert.equal(t.getHandledMaps().length, 0);
+    assert.equal(t.isCourseHandled('2', '旧版课程'), false);
+});
+
+test('旧窗口刷新后仍能识别重试代次并清除会话内的异常缓存', async () => {
+    const t = setup([
+        ['_kme_failed_videos', JSON.stringify(['1::异常课程::小节一'])],
+        ['_kme_handled_courses', JSON.stringify(['1::异常课程'])],
+        ['_kme_retry_epoch', 'old'],
+    ], [['_kme_retry_epoch', 'new']]);
+    t.state.enabled = false;
+    await t.mainLoop();
+    assert.equal(t.getFailedSubVideos().length, 0);
+    assert.equal(t.isCourseHandled('1', '异常课程'), false);
+    assert.equal(t.storage.get(t.STORAGE_KEYS.retryEpoch), 'new');
+});
+
+test('整课累计时长达标仍不跳过未打勾小节，等待超时回退原有有限重播', async () => {
+    const t = setup(); const records = platformRecords(t, 300);
+    t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(1000);
+    assert.equal(records.mode, 'catalog');
+    assert.equal(t.fixture.video.plays, 0); assert.equal(t.next.clicks, 0);
+    t.advance(30500); await settleLocks();
+    assert.equal(t.state.enabled, true);
+    assert.equal(t.fixture.video.plays, 1); assert.equal(t.next.clicks, 0);
+    assert.match(t.formatDiagnosticLogs(), /回退到原有有限重播/);
+});
+
+test('核对记录后打勾延迟到达才切下一节', async () => {
+    const t = setup(); platformRecords(t, 300);
+    t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(1000);
+    assert.equal(t.next.clicks, 0);
+    t.current.completed = true; t.advance(500);
+    assert.equal(t.next.clicks, 1);
+    assert.equal(t.fixture.video.plays, 0);
+});
+
+test('正常播放和已打勾连播不会打开记录页', async () => {
+    const t = setup(); const records = platformRecords(t, 300);
+    t.fixture.video.currentTime = 20;
+    await t.mainLoop();
+    assert.equal(records.recordClicks, 0);
+    t.current.completed = true;
+    t.switchToNextSubVideoOrCourse();
+    assert.equal(t.next.clicks, 1);
+    assert.equal(records.recordClicks, 0);
+});
+
+test('记录有时长缺口时仍最多重播三次，不延长原来的重试上限', async () => {
+    const t = setup(); const records = platformRecords(t, 20);
+    for (let i = 0; i < 4; i++) {
+        t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(1000); await settleLocks();
+    }
+    assert.equal(t.fixture.video.plays, 3);
+    assert.equal(t.state.enabled, false);
+    assert.equal(records.mode, 'catalog');
+    assert.match(t.formatDiagnosticLogs(), /仍有时长缺口/);
+});
+
+test('记录加载失败返回目录再按原规则重播，不把未知记录当成达标', async () => {
+    const t = setup(); const records = platformRecords(t, null);
+    t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(6000); await settleLocks();
+    assert.equal(records.mode, 'catalog');
+    assert.equal(t.fixture.video.plays, 1); assert.equal(t.next.clicks, 0);
+});
+
+test('返回目录失败时有限等待后暂停，不对隐藏小节操作或无限卡住', async () => {
+    const t = setup(); const records = platformRecords(t, 20); records.blockCatalog = true;
+    const original = t.context.document.querySelectorAll;
+    t.context.document.querySelectorAll = selector => selector.startsWith('div.group.cursor-pointer,') ? t.fixture.items : original(selector);
+    t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(6000); await settleLocks();
+    assert.equal(t.state.enabled, false);
+    assert.equal(t.fixture.video.plays, 0); assert.equal(t.next.clicks, 0);
+    assert.match(t.state.statusText, /目录加载超时/);
+});
+
+test('核对记录期间暂停、路由改变或播放器更换都取消旧恢复操作', async () => {
+    for (const action of ['pause', 'route', 'video']) {
+        const t = setup(); platformRecords(t, 20);
+        t.reconcileBeforeReplay(t.current, t.fixture.items);
+        if (action === 'pause') t.pauseAutomation('手动暂停');
+        if (action === 'route') t.context.location.href += '?changed';
+        if (action === 'video') t.fixture.video = { ...t.fixture.video };
+        t.advance(6000); await settleLocks();
+        assert.equal(t.fixture.video.plays, 0); assert.equal(t.next.clicks, 0);
+    }
+});
+
+test('核对结束后活动小节已更换，不重播或跳过旧小节', async () => {
+    const t = setup(); platformRecords(t, 20);
+    t.reconcileBeforeReplay(t.current, t.fixture.items);
+    t.next.innerText = '新小节\n00:01:40';
+    t.next.querySelector = () => ({ innerText: '新小节' });
+    t.next.className = 'text-primary'; t.current.className = '';
+    t.advance(1000); await settleLocks();
+    assert.equal(t.fixture.video.plays, 0); assert.equal(t.next.clicks, 0);
+    assert.equal(t.state.isActionPending, false);
+});
 function twoWindows(concurrency = 2) {
     const shared = { storage: new Map(), locks: createLockManager() };
     const a = setup([], [], shared);
@@ -564,7 +739,7 @@ test('calculateCourseTotalProgress 正确计算总时长、已完成小节数及
 });
 
 test('全量小节学完且检测到考试时，自动跳过考试并记录handledCourses', async () => {
-    const t = setup();
+    const t = setup(); t.state.currentCourse = '含考试课程';
     t.current.completed = true;
     t.fixture.items = [t.current];
     // 注入考试检测条目
@@ -628,7 +803,7 @@ test('课程大目录中跳过已处理课程，防止未打勾导致死循环',
 
     assert.equal(course1Clicks, 0, '已跳过的课程不应被再次点击');
     assert.equal(course2Clicks, 1, '应直接进入下一门未完成课程');
-    assert.equal(t.storage.get('_kme_m_progress') || t.storage.get('jinpei_map_progress'), '1 / 2 门 (50%)');
+    assert.equal(t.storage.get('_kme_m_progress') || t.storage.get('jinpei_map_progress'), '0 / 2 门 (0%) · 异常 0 · 待考试 0 · 待核验 1');
 });
 
 test('mainLoop 兼容 /home/courseplay/ 独立课程播放路由', async () => {
@@ -699,7 +874,7 @@ test('[P2] 任务中心跳过包含考试已学完的地图，避免死循环重
     t.state.isActionPending = false;
     await t.mainLoop();
     assert.equal(t.state.enabled, false);
-    assert.match(t.context.document.getElementById('jinpei-hud-status').innerText, /已学完/);
+    assert.match(t.context.document.getElementById('jinpei-hud-status').innerText, /本轮任务检查结束/);
 });
 
 test('[P3] getCourseItems 正确识别只有 0% 或仅有百分比的课程卡片', async () => {

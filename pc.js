@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.5.6
+// @version      1.6.0
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log("【神奇海螺 v1.5.6】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.0】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -29,6 +29,8 @@
         replayPlayMaxAttempts: 3, // 每轮重播内，播放启动请求最多尝试次数
         catalogWaitTimeout: 15000, // 返回目录的最大等待时间 (ms)
         pageReadyTimeout: 20000,  // 进入任务/课程后等待页面实际就绪的时间
+        learningRecordWait: 5000, // 平台记录加载的最长等待时间
+        completionMarkerWait: 30000, // 总时长达标后额外等待小节完成标记
         myTaskUrl: "https://pc.kmelearning.com/jsncxyslhs/home/my/myTask",
         autoMute: true,           // 自动静音播放
         playbackRate: 1.0,        // 正常播放速度
@@ -54,6 +56,7 @@
         concurrency: '_kme_concurrency',  // 并发课程数设置 (1 ~ 6)
         activeTabs: '_kme_active_tabs',   // 并发多标签页活跃状态表
         diagnostics: '_kme_diagnostics', // 当前窗口的最近诊断日志（跨刷新）
+        retryEpoch: '_kme_retry_epoch', // 通知暂停窗口清理旧的异常/处理缓存
     };
 
     function getStorageItem(keyName, legacyKey) {
@@ -278,6 +281,113 @@
         lastTabSpawnTime: 0,       // 并发子窗口唤起防抖节流
     };
 
+    const COURSE_OUTCOME_PREFIX = '_kme_course_outcome_';
+    const courseOutcomeMemory = new Map();
+    let lastRetryEpoch = getStorageItem(STORAGE_KEYS.retryEpoch) || '';
+    let learningRecordPending = false;
+
+    function getCourseOutcomes() {
+        const results = new Map(courseOutcomeMemory);
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith(COURSE_OUTCOME_PREFIX)) continue;
+                try {
+                    const value = JSON.parse(localStorage.getItem(key));
+                    if (value && Array.isArray(value.aliases) && Array.isArray(value.failedSubKeys) && ['completed', 'skipped', 'exam'].includes(value.status)) results.set(key, value);
+                } catch (_) {}
+            }
+        } catch (_) {}
+        return [...results.values()];
+    }
+
+    function saveCourseOutcome(status, failedSubKeys = []) {
+        const mapId = currentClaim?.course.mapId || getCurrentMapId() || 'global';
+        const title = currentClaim?.course.courseTitle || getCurrentCourseTitle() || 'unknown';
+        const key = currentClaim?.course.courseKey || title;
+        const storageKey = COURSE_OUTCOME_PREFIX + JSON.stringify([mapId, key]);
+        const previous = getCourseOutcomes().find(value => value.mapId === mapId && (value.aliases.includes(key) || value.aliases.includes(title)));
+        const value = { mapId, mapTitle: state.currentTask || getMapTitleFromPage(), title, status,
+            aliases: [...new Set([key, title])], failedSubKeys: [...new Set([...(previous?.failedSubKeys || []), ...failedSubKeys])], updatedAt: Date.now() };
+        if (status === 'completed') value.failedSubKeys = [];
+        try {
+            localStorage.setItem(storageKey, JSON.stringify(value));
+            if (previous) {
+                const previousKey = COURSE_OUTCOME_PREFIX + JSON.stringify([previous.mapId, previous.aliases[0]]);
+                if (previousKey !== storageKey) { removeLocalItem(previousKey); courseOutcomeMemory.delete(previousKey); }
+            }
+            courseOutcomeMemory.set(storageKey, value);
+            updateOutcomeHUD();
+            return true;
+        } catch (_) {
+            pauseAutomation('无法保存课程处理结果，已暂停；请检查浏览器存储空间。');
+            return false;
+        }
+    }
+
+    function getCourseDisposition(item, mapId) {
+        if (isItemCompleted(item)) return 'completed';
+        const key = getCourseKeyFromItem(item);
+        const title = (item.innerText || '').split('\n')[0].trim();
+        const outcome = getCourseOutcomes().find(value => value.mapId === mapId && (value.aliases.includes(key) || value.aliases.includes(title)));
+        if (outcome) return outcome.status;
+        // 历史版本只记录“已处理”，不能据此声称平台已完成。
+        if (isCourseHandled(mapId, key) || isCourseHandled(mapId, title)) return 'unverified';
+        return 'pending';
+    }
+
+    function updateOutcomeHUD() {
+        const results = getCourseOutcomes();
+        const skipped = results.filter(value => value.status === 'skipped').length;
+        const exams = results.filter(value => value.status === 'exam').length;
+        const unverified = getHandledCourses().filter(key => !results.some(value => value.aliases.some(alias => key === `${value.mapId}::${alias}`))).length;
+        const row = getHUDElement('jinpei-outcome-row');
+        const text = getHUDElement('jinpei-outcome-summary');
+        const retry = getHUDElement('jinpei-retry-skipped');
+        if (row) row.style.display = skipped || exams || unverified ? 'flex' : 'none';
+        if (text) text.innerText = `异常跳过 ${skipped} 门 · 待考试 ${exams} 门` + (unverified ? ` · 待核验 ${unverified}` : '');
+        if (retry) retry.style.display = skipped || unverified ? 'inline-block' : 'none';
+    }
+
+    function syncRetryEpoch() {
+        const epoch = getLocalItem(STORAGE_KEYS.retryEpoch, '');
+        if (epoch === lastRetryEpoch) return;
+        lastRetryEpoch = epoch;
+        setStorageItem(STORAGE_KEYS.retryEpoch, epoch);
+        courseOutcomeMemory.clear();
+        removeStorageItem(STORAGE_KEYS.failedVideos);
+        removeStorageItem(STORAGE_KEYS.handledCourses, 'jinpei_handled_courses');
+        removeStorageItem(STORAGE_KEYS.handledMaps, 'jinpei_handled_maps');
+        clearWatchdogState();
+        completionReplayGeneration++;
+        completionReplayMemory = null;
+        removeStorageItem(STORAGE_KEYS.completionReplay);
+    }
+
+    function retrySkippedCourses() {
+        if (Object.entries(getActiveTabs()).some(([id, value]) => id !== TAB_ID && value.courseKey)) {
+            updateHUD('请先暂停其他学习窗口，再重试异常课程。');
+            return false;
+        }
+        pauseAutomation('异常记录已清理，请点击开始重新检查未完成课程。');
+        const skipped = getCourseOutcomes().filter(value => value.status === 'skipped');
+        const affectedMaps = new Set(skipped.flatMap(value => [value.mapId, value.mapTitle]).filter(Boolean));
+        const hasUnverified = getHandledCourses().some(key => !getCourseOutcomes().some(value => value.aliases.some(alias => key === `${value.mapId}::${alias}`)));
+        const keepCourses = getHandledCourses().filter(key => {
+            const typed = getCourseOutcomes().find(value => value.aliases.some(alias => key === `${value.mapId}::${alias}`));
+            return typed && typed.status !== 'skipped';
+        });
+        const keepMaps = skipped.length && !hasUnverified ? getHandledMaps().filter(key => !affectedMaps.has(key)) : [];
+        for (const value of skipped) for (const alias of value.aliases) removeLocalItem(COURSE_OUTCOME_PREFIX + JSON.stringify([value.mapId, alias]));
+        setLocalItem(STORAGE_KEYS.handledCourses, JSON.stringify(keepCourses));
+        setLocalItem(STORAGE_KEYS.handledMaps, JSON.stringify(keepMaps));
+        setLocalItem(STORAGE_KEYS.retryEpoch, Date.now() + ':' + Math.random());
+        syncRetryEpoch();
+        updateOutcomeHUD();
+        diagnosticConsole.log('已清理异常跳过记录，保留已完成和待考试课程。');
+        return true;
+    }
+
     // [防检测 1: 拟人随机数与时间抖动发生器 Human Jitter]
     function randomBetween(min, max) {
         return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -358,14 +468,21 @@
         renderDiagnosticLogs();
     }
 
+    function formatLogTimestamp(timestamp = Date.now()) {
+        const date = new Date(timestamp);
+        const pad = (value, length = 2) => String(value).padStart(length, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+            `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+    }
+
     const diagnosticConsole = Object.fromEntries(['log', 'warn', 'error'].map(method => [method, (...args) => {
-        console[method](...args);
+        console[method](`[${formatLogTimestamp()}]`, ...args);
         recordDiagnostic(method === 'log' ? 'INFO' : method.toUpperCase(), ...args);
     }]));
 
     function formatDiagnosticLogs() {
         return '神奇海螺诊断日志\n' + diagnosticLogs.map(entry =>
-            `[${new Date(entry.time).toISOString()}] [${entry.level}] [${entry.tab}] ${entry.message}\n` +
+            `[${formatLogTimestamp(entry.time)}] [${entry.level}] [${entry.tab}] ${entry.message}\n` +
             `  任务=${entry.task || '-'} 课程=${entry.course || '-'} 小节=${entry.sub || '-'} 同步重试=${entry.syncRetry || 0} 页面=${entry.route || '-'}`
         ).join('\n');
     }
@@ -457,6 +574,7 @@
     }
 
     function pauseAutomation(message) {
+        learningRecordPending = false;
         pageWaitGeneration++;
         pageWaitActive = false;
         diagnosticConsole.warn('自动学习暂停：', message);
@@ -670,7 +788,7 @@
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
                     <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.5.6</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.0</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -781,6 +899,10 @@
                 </div>
 
                 <!-- 底部提示 -->
+                <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309;">
+                    <span id="jinpei-outcome-summary"></span>
+                    <button id="jinpei-retry-skipped" type="button" style="border: 0; background: transparent; color: #64748b; font-size: 10px; cursor: pointer; padding: 2px;">重试异常</button>
+                </div>
                 <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94a3b8; padding: 0 2px;">
                     <span>按住顶部可拖动</span>
                     <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; text-decoration: underline;" title="在后台多开一个课程页面">多开 1 窗口</span>
@@ -818,6 +940,8 @@
         });
         getHUDElement('jinpei-diagnostics-copy').addEventListener('click', copyDiagnosticLogs);
         getHUDElement('jinpei-diagnostics-clear').addEventListener('click', clearDiagnosticLogs);
+        getHUDElement('jinpei-retry-skipped').addEventListener('click', retrySkippedCourses);
+        updateOutcomeHUD();
 
         // 边界吸附与溢出校正：保证 HUD 在折叠、展开或窗口缩放时始终完整可见不换行
         function clampHUDPosition() {
@@ -999,6 +1123,7 @@
         if (allCoursesProg !== undefined) state.allCoursesProgress = allCoursesProg;
         if (courseTotalProg !== undefined) state.courseTotalProgress = courseTotalProg;
         if (courseTotalPercent !== undefined) state.courseTotalPercent = courseTotalPercent;
+        updateOutcomeHUD();
 
         const statusEl = getHUDElement('jinpei-hud-status');
         const taskRow = getHUDElement('jinpei-hud-task-row');
@@ -1511,7 +1636,8 @@
 
     function getFailedSubVideos() {
         try {
-            return JSON.parse(getStorageItem(STORAGE_KEYS.failedVideos)) || [];
+            const session = JSON.parse(getStorageItem(STORAGE_KEYS.failedVideos)) || [];
+            return [...new Set([...session, ...getCourseOutcomes().flatMap(value => value.failedSubKeys)])];
         } catch (_) {
             return [];
         }
@@ -1523,6 +1649,7 @@
         if (!list.includes(subKey)) {
             list.push(subKey);
             setStorageItem(STORAGE_KEYS.failedVideos, JSON.stringify(list));
+            saveCourseOutcome('skipped', [subKey]);
         }
     }
 
@@ -1550,6 +1677,150 @@
             completionReplayMemory = null;
             removeStorageItem(STORAGE_KEYS.completionReplay);
         }
+    }
+
+    function findCourseTab(label) {
+        return Array.from(document.querySelectorAll('[role="tab"], .ant5-tabs-tab-btn, .ant-tabs-tab-btn'))
+            .find(el => {
+                // Ant Design 会把隐藏的读屏提示插入活动标签，innerText 不再只有“目录”。
+                const directText = Array.from(el.childNodes || []).filter(node => node.nodeType === 3).map(node => node.textContent).join('').trim();
+                return (directText || (el.innerText || '').trim()) === label && el.offsetParent !== null;
+            });
+    }
+
+    function isCourseTabActive(label) {
+        const tab = findCourseTab(label);
+        return !!tab && tab.getAttribute('aria-selected') === 'true';
+    }
+
+    function directoryDurationSeconds(items) {
+        let total = 0;
+        for (const item of items) {
+            const matches = (item.innerText || '').match(/\b\d{1,3}:\d{2}(?::\d{2})?\b/g);
+            if (!matches) return 0;
+            const seconds = parseTimeToSeconds(matches[matches.length - 1]);
+            if (!(seconds > 0)) return 0;
+            total += seconds;
+        }
+        return total;
+    }
+
+    function readPlatformLearningRecord() {
+        const roots = Array.from(document.querySelectorAll('[class*="course-records"], [class*="courseRecords"], [class*="record-list"]'));
+        const root = roots.find(el => el.offsetParent !== null && /学习总时长/.test(el.innerText || ''));
+        if (!root || root.querySelector('.ant5-spin-spinning, .ant-spin-spinning, [aria-busy="true"]')) return null;
+        const match = (root.innerText || '').match(/学习总时长\s*(\d{1,3}[:：]\d{2}[:：]\d{2})(?!\d)/);
+        if (!match) return null;
+        const parts = match[1].replace(/：/g, ':').split(':').map(Number);
+        if (parts[1] >= 60 || parts[2] >= 60) return null;
+        return { learnedSeconds: parts[0] * 3600 + parts[1] * 60 + parts[2] };
+    }
+
+    // 记录是整课累计时长，不能替代当前小节的完成标记。
+    function reconcileBeforeReplay(subEl, items) {
+        const recordTab = findCourseTab('记录');
+        const catalogTab = findCourseTab('目录');
+        const requiredSeconds = directoryDurationSeconds(items);
+        if (!recordTab || !catalogTab || !requiredSeconds) {
+            diagnosticConsole.log('平台学习记录入口或目录时长不可用，沿用有限末尾重播。');
+            replayVideoTail(subEl);
+            return;
+        }
+        if (learningRecordPending) return;
+        const video = document.querySelector('video');
+        const subKey = getSubVideoKey(subEl);
+        const sourceUrl = location.href;
+        const generation = completionReplayGeneration;
+        const startedAt = Date.now();
+        let record = null;
+        learningRecordPending = true;
+        state.isSwitching = true;
+        state.isActionPending = true;
+        const valid = () => state.enabled && generation === completionReplayGeneration && location.href === sourceUrl && document.querySelector('video') === video;
+        function cancelIfChanged() {
+            if (valid()) return false;
+            learningRecordPending = false;
+            if (state.enabled) { state.isActionPending = false; state.isSwitching = false; }
+            return true;
+        }
+        function renew() {
+            if (currentClaim && !registerTabHeartbeat()) { pauseAutomation('核对记录时无法续期课程占用，已暂停。'); return false; }
+            return true;
+        }
+        function resumeForCurrent(active) {
+            learningRecordPending = false;
+            state.isActionPending = false;
+            if (isItemCompleted(active)) {
+                state.syncRetryCount = 0;
+                switchToNextSubVideoOrCourse();
+            } else {
+                replayVideoTail(active);
+            }
+        }
+        function restoreCatalog() {
+            if (cancelIfChanged()) return;
+            const tab = findCourseTab('目录');
+            if (!tab) { pauseAutomation('核对学习记录后无法返回小节目录，已暂停。'); return; }
+            simulateHumanClick(tab);
+            const restoreStarted = Date.now();
+            function pollCatalog() {
+                if (cancelIfChanged() || !renew()) return;
+                const active = isCourseTabActive('目录') && getAllSubVideoItems().find(isSubVideoActive);
+                if (active) {
+                    if (getSubVideoKey(active) !== subKey) {
+                        learningRecordPending = false;
+                        state.isActionPending = false;
+                        state.isSwitching = false;
+                        diagnosticConsole.warn('核对期间小节已更换，取消旧小节的恢复操作。');
+                        return;
+                    }
+                    if (isItemCompleted(active) || !record || record.learnedSeconds < requiredSeconds) {
+                        resumeForCurrent(active);
+                        return;
+                    }
+                    // 时长达标只延长等待，不把任何未打勾的小节视为完成。
+                    const markerStarted = Date.now();
+                    updateHUD('课程累计时长已达目录总时长，等待当前小节完成标记...');
+                    function pollMarker() {
+                        if (cancelIfChanged() || !renew()) return;
+                        const current = getAllSubVideoItems().find(isSubVideoActive);
+                        if (!current || getSubVideoKey(current) !== subKey) {
+                            pauseAutomation('等待完成标记时小节目录发生变化，已暂停。');
+                            return;
+                        }
+                        if (isItemCompleted(current)) { resumeForCurrent(current); return; }
+                        if (Date.now() - markerStarted >= CONFIG.completionMarkerWait) {
+                            diagnosticConsole.warn('课程累计时长已达标但小节仍未打勾，回退到原有有限重播，不据此跳过小节。');
+                            resumeForCurrent(current);
+                            return;
+                        }
+                        setManagedTimeout(pollMarker, 500);
+                    }
+                    pollMarker();
+                    return;
+                }
+                if (Date.now() - restoreStarted >= CONFIG.learningRecordWait) { pauseAutomation('核对记录后小节目录加载超时，已暂停。'); return; }
+                setManagedTimeout(pollCatalog, 500);
+            }
+            setManagedTimeout(pollCatalog, 500);
+        }
+        function pollRecord() {
+            if (cancelIfChanged() || !renew()) return;
+            record = isCourseTabActive('记录') ? readPlatformLearningRecord() : null;
+            if (record) {
+                diagnosticConsole.log(`平台课程累计学习时长 ${formatTime(record.learnedSeconds)}，目录视频总时长 ${formatTime(requiredSeconds)}；${record.learnedSeconds >= requiredSeconds ? '延长等待完成标记' : '仍有时长缺口，按原规则有限重播'}。`);
+                restoreCatalog();
+            } else if (Date.now() - startedAt >= CONFIG.learningRecordWait) {
+                diagnosticConsole.warn('平台学习记录加载超时或格式无法识别，返回目录后按原规则有限重播。');
+                restoreCatalog();
+            } else {
+                setManagedTimeout(pollRecord, 500);
+            }
+        }
+        updateHUD('正在核对平台学习记录...');
+        diagnosticConsole.log('打开平台记录页核对课程累计时长。');
+        simulateHumanClick(recordTab);
+        setManagedTimeout(pollRecord, 500);
     }
 
     function replayVideoTail(subEl) {
@@ -1892,7 +2163,12 @@
                     (location.href.includes('/home/training/detail/') && !!getStudyEntryButton()) || isStudyPageReady());
             }, 1000);
         } else {
-            pauseAutomation("🎉 列表中的所有学习地图均已学完（已跳过包含考试的地图）！");
+            const outcomes = getCourseOutcomes();
+            const skipped = outcomes.filter(value => value.status === 'skipped').length;
+            const exams = outcomes.filter(value => value.status === 'exam').length;
+            pauseAutomation(skipped || exams
+                ? `本轮任务处理结束：异常跳过 ${skipped} 门，待考试 ${exams} 门；平台尚未全部完成。`
+                : '本轮任务检查结束；已处理的历史任务请以平台完成状态为准。');
         }
     }
 
@@ -1944,7 +2220,7 @@
     }
 
     async function processStudyPage() {
-        if (pageWaitActive) return;
+        if (pageWaitActive || learningRecordPending) return;
         const pageUrl = location.href;
         const generation = claimGeneration;
         const video = document.querySelector('video');
@@ -1968,22 +2244,29 @@
 
                 // 统计地图所有课程的总进度
                 let completedCount = 0;
+                let processedCount = 0;
+                let skippedCount = 0;
+                let examCount = 0;
+                let unverifiedCount = 0;
                 const totalCount = courseItems.length;
                 for (const c of courseItems) {
-                    const cKey = getCourseKeyFromItem(c);
-                    const cName = (c.innerText || '').split('\n')[0].trim();
-                    if (isItemCompleted(c) || isCourseHandled(mapId, cKey) || isCourseHandled(mapId, cName)) {
-                        completedCount++;
-                    }
+                    const disposition = getCourseDisposition(c, mapId);
+                    if (disposition !== 'pending') processedCount++;
+                    if (disposition === 'completed') completedCount++;
+                    if (disposition === 'skipped') skippedCount++;
+                    if (disposition === 'exam') examCount++;
+                    if (disposition === 'unverified') unverifiedCount++;
                 }
                 const pct = totalCount > 0 ? Math.floor((completedCount / totalCount) * 100) : 0;
-                const allCoursesProg = `${completedCount} / ${totalCount} 门 (${pct}%)`;
+                const allCoursesProg = `${completedCount} / ${totalCount} 门 (${pct}%)` +
+                    (skippedCount || examCount || unverifiedCount ? ` · 异常 ${skippedCount} · 待考试 ${examCount} · 待核验 ${unverifiedCount}` : '');
                 setStorageItem(STORAGE_KEYS.mapProgress, allCoursesProg);
 
                 // 如果所有课程全部完成
-                if (completedCount === totalCount) {
+                if (processedCount === totalCount) {
                     state.isActionPending = true;
-                    updateHUD("🎉 本地图所有课程已全部学完！返回任务中心...", undefined, undefined, undefined, undefined, allCoursesProg);
+                    updateHUD(completedCount === totalCount ? '🎉 本地图课程已确认完成！返回任务中心...' :
+                        `本轮处理结束：完成 ${completedCount}，异常 ${skippedCount}，待考试 ${examCount}，待核验 ${unverifiedCount}；返回任务中心...`, undefined, undefined, undefined, undefined, allCoursesProg);
                     // 标记当前地图为已处理（即使包含跳过的考试，防止回任务页又反复进入该地图）
                     if (mapId) markMapHandled(mapId);
                     if (state.currentTask) markMapHandled(state.currentTask);
@@ -2013,9 +2296,7 @@
 
                 // 过滤出未完成且未被记录跳过的大课
                 const uncompletedCourses = courseItems.filter(c => {
-                    const cKey = getCourseKeyFromItem(c);
-                    const cName = (c.innerText || '').split('\n')[0].trim();
-                    return !isItemCompleted(c) && !isCourseHandled(mapId, cKey) && !isCourseHandled(mapId, cName);
+                    return getCourseDisposition(c, mapId) === 'pending';
                 });
 
                 // 寻找第一个未被其他活跃窗口占用的课程
@@ -2241,7 +2522,7 @@
                 }, 3000);
                 return;
             } else {
-                replayVideoTail(allSubItems[currentIndex]);
+                reconcileBeforeReplay(allSubItems[currentIndex], allSubItems);
                 return;
             }
         } else {
@@ -2294,18 +2575,24 @@
 
         // 记录本门课程已完成，跳过考试或后续重复检查（基于当前 地图ID + 课程标识 作用域）
         const mapId = getCurrentMapId();
-        const courseId = getCurrentCourseId();
+        const courseId = currentClaim?.course.courseKey || '';
         const courseTitle = getCurrentCourseTitle();
+        const failedSubKeys = allSubItems.filter(el => !isItemCompleted(el) && isSubVideoFailed(getSubVideoKey(el))).map(getSubVideoKey);
+        const hasExam = detectCourseExam();
+        const outcome = failedSubKeys.length ? 'skipped' : hasExam ? 'exam' : 'completed';
+        if (!saveCourseOutcome(outcome, failedSubKeys)) return;
         if (courseId) markCourseHandled(mapId, courseId);
         if (courseTitle) markCourseHandled(mapId, courseTitle);
         if (state.currentCourse) markCourseHandled(mapId, state.currentCourse);
 
-        const hasExam = detectCourseExam();
         const allCoursesProg = getStorageItem(STORAGE_KEYS.mapProgress, 'jinpei_map_progress') || state.allCoursesProgress || "";
 
-        if (hasExam) {
+        if (failedSubKeys.length) {
+            diagnosticConsole.warn(`本课仍有 ${failedSubKeys.length} 个异常小节，记录为异常跳过，不计入已完成。`);
+            updateHUD(`本课异常跳过 ${failedSubKeys.length} 节，继续其他课程；可稍后重试。`, undefined, undefined, undefined, undefined, allCoursesProg);
+        } else if (hasExam) {
             diagnosticConsole.log("【神奇海螺】检测到本课程包含课后考试/测验节点，根据策略跳过考试，结束本课程！");
-            updateHUD("📝 本课视频已学完（包含考试，已自动跳过），正在切课...", undefined, undefined, "100%", undefined, allCoursesProg, "全部完成 (考试已跳过)", 100);
+            updateHUD("📝 本课视频已学完（包含考试，已自动跳过），待考试，正在切课...", undefined, undefined, "100%", undefined, allCoursesProg, "视频完成 · 待考试", 100);
         } else {
             diagnosticConsole.log("【神奇海螺】严格核实：本课程全量子视频均已完成！准备返回课程目录选择新课程...");
             updateHUD("本课程全部完成，正在返回学习目录切换新课程...", undefined, undefined, "100%", undefined, allCoursesProg, "全部完成", 100);
@@ -2344,6 +2631,7 @@
     // 5. 主循环调度器
     // ==========================================
     function mainLoop() {
+        syncRetryEpoch();
         createHUD();
 
         // 未手动启动时，不执行任何自动化逻辑（包括不自动弹窗确认、不自动播放、不自动跳转）
