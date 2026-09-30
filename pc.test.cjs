@@ -80,7 +80,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; window.testApi = { state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -369,7 +369,7 @@ test('正常播放和已打勾连播不会打开记录页', async () => {
 test('记录有时长缺口时仍最多重播三次，不延长原来的重试上限', async () => {
     const t = setup(); const records = platformRecords(t, 20);
     for (let i = 0; i < 4; i++) {
-        t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(1000); await settleLocks();
+        t.reconcileBeforeReplay(t.current, t.fixture.items); t.advance(1500); await settleLocks();
     }
     assert.equal(t.fixture.video.plays, 3);
     assert.equal(t.state.enabled, false);
@@ -565,6 +565,252 @@ test('同步超时重播末尾30秒，重播3次仍未打勾才暂停', async ()
     assert.equal(t.timers.size, 0);
     assert.equal(t.fixture.video.plays, 3);
     assert.match(t.context.document.getElementById('jinpei-hud-status').innerText, /重播 3 次后仍未打勾/);
+});
+
+function simulatePlatformEndReset(t) {
+    const listeners = new Map();
+    const video = t.fixture.video;
+    video.addEventListener = (name, fn) => listeners.set(name, fn);
+    video.currentTime = 98; video.readyState = 4;
+    t.observeVideoPlayback(video);
+    // 与实际日志一致：网站先处理 ended，将进度归零，脚本回调随后运行。
+    video.currentTime = 0; video.ended = false; video.paused = true;
+    listeners.get('ended')();
+    return video;
+}
+
+test('完成判断只认明确对勾或状态，不把图标颜色和课程标题当完成', () => {
+    const t = setup();
+    const item = { innerText: '100%客户满意度\n0%', querySelector: () => null };
+    assert.equal(t.isItemCompleted(item), false);
+    item.innerText = '课程\n未完成';
+    item.querySelector = selector => selector.startsWith('svg path') ? {} : null;
+    assert.equal(t.isItemCompleted(item), false);
+    item.innerText = '课程\n100%'; assert.equal(t.isItemCompleted(item), true);
+    item.innerText = '课程\n已完成'; assert.equal(t.isItemCompleted(item), true);
+    item.innerText = '课程\n0%';
+    item.querySelector = selector => selector.startsWith('[data-icon="check"]') ? {} : null;
+    assert.equal(t.isItemCompleted(item), true);
+});
+
+test('同步等待中切换到新小节，旧回调不重播或递增新小节重试', () => {
+    const t = setup(); t.switchToNextSubVideoOrCourse();
+    t.next.getAttribute = name => name === 'data-chapter-id' ? 'new-section' : null;
+    t.current.className = ''; t.next.className = 'text-primary'; t.fixture.video.currentTime = 20;
+    t.advance(16000);
+    assert.equal(t.fixture.video.currentTime, 20);
+    assert.equal(t.fixture.video.plays, 0);
+    assert.equal(t.state.syncRetryCount, 0);
+    assert.equal(t.state.isSwitching, false);
+    assert.equal(t.state.enabled, true);
+    assert.match(t.formatDiagnosticLogs(), /取消旧同步等待/);
+});
+
+test('复用同一个播放器切小节或换源，旧重播任务不播放新媒体', () => {
+    for (const kind of ['section', 'source']) {
+        const t = setup(); t.fixture.video.readyState = 1;
+        t.replayVideoTail(t.current);
+        if (kind === 'section') {
+            t.next.getAttribute = name => name === 'data-chapter-id' ? 'new-section' : null;
+            t.current.className = ''; t.next.className = 'text-primary';
+        }
+        else t.fixture.video.src = 'new-media';
+        t.fixture.video.currentTime = 20; t.fixture.video.readyState = 4;
+        t.advance(16000);
+        assert.equal(t.fixture.video.plays, 0);
+        assert.equal(t.fixture.video.currentTime, 20);
+        assert.equal(t.state.enabled, true);
+        assert.equal(t.state.isSwitching, false);
+    }
+});
+
+test('记录核对期间复用播放器换源，退出旧核对且不操作新媒体', () => {
+    const t = setup(); platformRecords(t, 300);
+    t.reconcileBeforeReplay(t.current, t.fixture.items);
+    t.fixture.video.src = 'new-media'; t.fixture.video.currentTime = 20;
+    t.advance(35000);
+    assert.equal(t.fixture.video.plays, 0);
+    assert.equal(t.fixture.video.currentTime, 20);
+    assert.equal(t.state.enabled, true);
+    assert.equal(t.state.isActionPending, false);
+});
+
+test('平台先切小节再派发旧ended，不给新小节生成完成信号', async () => {
+    const t = setup(); const listeners = new Map();
+    t.fixture.video.addEventListener = (name, fn, capture) => {
+        if (name === 'ended') assert.equal(capture, true);
+        listeners.set(name, fn);
+    };
+    t.fixture.video.currentTime = 98; t.observeVideoPlayback(t.fixture.video);
+    t.next.getAttribute = name => name === 'data-chapter-id' ? 'new-section' : null;
+    t.current.className = ''; t.next.className = 'text-primary';
+    t.fixture.video.currentTime = 0; t.fixture.video.src = 'new-media';
+    t.fixture.video.paused = true; listeners.get('ended')();
+    await t.mainLoop();
+    assert.equal(t.state.isSwitching, false);
+    assert.equal(t.fixture.video.plays, 1);
+    assert.doesNotMatch(t.formatDiagnosticLogs(), /"endedEvent":true/);
+    assert.match(t.formatDiagnosticLogs(), /忽略.*旧结束事件/);
+});
+
+function delayedChapter(t, load = true) {
+    const original = t.context.document.querySelectorAll.bind(t.context.document);
+    let expanded = false; let loaded = false; let clicks = 0;
+    const panel = { innerText: '', querySelector: () => null,
+        querySelectorAll: () => loaded ? [t.next] : [] };
+    const header = { innerText: '第二章',
+        getAttribute: name => name === 'aria-expanded' ? String(expanded) : null,
+        closest: () => ({ querySelector: () => panel }),
+        click() { clicks++; expanded = true; if (load) t.context.setTimeout(() => {
+            loaded = true; t.fixture.items.push(t.next);
+        }, 1500); } };
+    t.context.document.querySelectorAll = selector => selector.includes('collapse-header') ? [header] : original(selector);
+    t.fixture.items = [t.current]; t.current.completed = true;
+    return { get clicks() { return clicks; } };
+}
+
+test('折叠章节异步加载时等待全量目录，不提前把课程标记完成', () => {
+    const t = setup(); const chapter = delayedChapter(t);
+    t.switchToNextSubVideoOrCourse(); t.advance(1000);
+    assert.equal(t.getCourseOutcomes().length, 0);
+    assert.equal(t.next.clicks, 0);
+    t.advance(2000);
+    assert.equal(t.next.clicks, 1);
+    assert.equal(t.getCourseOutcomes().length, 0);
+    assert.equal(chapter.clicks, 1);
+});
+
+test('章节始终加载不出时有限等待后暂停，不登记完成', () => {
+    const t = setup(); const chapter = delayedChapter(t, false);
+    t.switchToNextSubVideoOrCourse(); t.advance(21000);
+    assert.equal(t.state.enabled, false);
+    assert.equal(t.getCourseOutcomes().length, 0);
+    assert.equal(chapter.clicks, 1);
+    assert.match(t.formatDiagnosticLogs(), /章节目录未完整加载/);
+});
+
+test('诊断读取目录不展开章节，暂停取消目录等待中的后续操作', () => {
+    const t = setup(); const chapter = delayedChapter(t);
+    t.observeVideoPlayback(t.fixture.video);
+    assert.equal(chapter.clicks, 0);
+    t.switchToNextSubVideoOrCourse(); t.pauseAutomation('手动暂停'); t.advance(21000);
+    assert.equal(t.next.clicks, 0);
+    assert.equal(t.getCourseOutcomes().length, 0);
+    assert.equal(t.state.enabled, false);
+});
+
+test('ended被平台归零后仍等待打勾，不从0恢复播放，确认完成后连播', async () => {
+    const t = setup(); const video = simulatePlatformEndReset(t);
+    await t.mainLoop();
+    assert.equal(video.plays, 0);
+    assert.equal(t.state.isSwitching, true);
+    assert.match(t.formatDiagnosticLogs(), /"endedEvent":true/);
+    t.current.completed = true; t.advance(4000);
+    assert.equal(t.next.clicks, 1);
+    assert.equal(video.plays, 0);
+});
+
+test('日常日志关闭详细事件输出，结束归零保护仍正常生效', async () => {
+    const t = setup(); t.CONFIG.debugPlayback = false; t.clearDiagnosticLogs();
+    const video = simulatePlatformEndReset(t);
+    await t.mainLoop();
+    assert.equal(video.plays, 0);
+    assert.equal(t.state.isSwitching, true);
+    assert.match(t.formatDiagnosticLogs(), /当前子视频播放结束/);
+    assert.doesNotMatch(t.formatDiagnosticLogs(), /播放诊断：(?:播放器出现|进度回退|已记住结束事件)|"previous"|"endedEvent"/);
+    t.current.completed = true; t.advance(4000);
+    assert.equal(t.next.clicks, 1);
+    assert.equal(video.plays, 0);
+});
+
+test('平台结束归零后未打勾，等待同步超时才回退到末尾30秒', async () => {
+    const t = setup(); const video = simulatePlatformEndReset(t);
+    await t.mainLoop(); t.advance(15000);
+    assert.equal(video.plays, 0);
+    t.advance(1500); await settleLocks();
+    assert.equal(video.currentTime, 70);
+    assert.equal(video.plays, 1);
+    assert.match(t.formatDiagnosticLogs(), /脚本请求末尾回退/);
+});
+
+test('剩余不到1秒仍继续正常播放，不提前进入完成检查', async () => {
+    const t = setup(); t.fixture.video.currentTime = 99.5;
+    await t.mainLoop();
+    assert.equal(t.state.isSwitching, false);
+    assert.doesNotMatch(t.formatDiagnosticLogs(), /当前子视频播放结束/);
+});
+
+test('最后半秒持续卡顿仍触发看门狗，已收到结束事件归零则不会误刷新', () => {
+    const stalled = setup();
+    stalled.fixture.video.currentTime = 99.5;
+    stalled.checkWatchdog(stalled.fixture.video, stalled.current, stalled.fixture.items);
+    stalled.advance(31000);
+    stalled.checkWatchdog(stalled.fixture.video, stalled.current, stalled.fixture.items);
+    assert.equal(stalled.context.location.reloads, 1);
+
+    const ended = setup();
+    ended.checkWatchdog(ended.fixture.video, ended.current, ended.fixture.items);
+    simulatePlatformEndReset(ended);
+    ended.advance(31000);
+    ended.checkWatchdog(ended.fixture.video, ended.current, ended.fixture.items);
+    assert.equal(ended.context.location.reloads, 0);
+});
+
+test('结束信号不跨换源、小节和播放器复用，旧完成等待不处理新播放器', async () => {
+    for (const kind of ['source', 'section', 'player', 'pending']) {
+        const t = setup(); const video = simulatePlatformEndReset(t);
+        if (kind === 'pending') await t.mainLoop();
+        if (kind === 'source') video.currentSrc = 'new-source';
+        if (kind === 'section') t.fixture.items = [{ ...t.current,
+            querySelector(selector) { return selector === '[title], .truncate' ? { innerText: '新小节' } : null; } }];
+        if (kind === 'player' || kind === 'pending') t.fixture.video = { ...video, currentTime: 10, paused: false, plays: 0, addEventListener() {} };
+        if (kind === 'pending') {
+            t.advance(4000);
+            assert.equal(t.next.clicks, 0);
+            assert.doesNotMatch(t.formatDiagnosticLogs(), /正在检查小节完成情况/);
+        } else {
+            await t.mainLoop();
+            assert.equal(t.state.isSwitching, false);
+            assert.doesNotMatch(t.formatDiagnosticLogs(), /"endedEvent":true/);
+        }
+    }
+});
+
+test('手动返回课程目录释放自己旧课程锁，能继续领取另一门课', async () => {
+    const t = setup(); assert.equal(await t.tryClaimCourseSlot('old', '旧课程', '1'), true);
+    const nextCourse = { innerText: '下一门课程\n2学时', children: [], offsetParent: {}, clicks: 0, click() { this.clicks++; } };
+    t.fixture.video = null; t.fixture.courses = [nextCourse];
+    await t.mainLoop(); await settleLocks();
+    if (!t.state.isActionPending) await t.mainLoop();
+    t.advance(1000);
+    assert.equal(nextCourse.clicks, 1);
+    assert.equal(t.getActiveTabs()[t.TAB_ID].courseKey, '下一门课程');
+    assert.match(t.formatDiagnosticLogs(), /释放当前窗口旧课程/);
+});
+
+test('异常关闭遗留的独立心跳无真实课程锁时立即清理，不等待120秒', async () => {
+    const t = setup([], [['_kme_tab_closed', JSON.stringify({
+        courseKey: '目标课程', courseTitle: '目标课程', mapId: '1', timestamp: 0,
+    })]]);
+    t.fixture.video = null;
+    let clicks = 0;
+    t.fixture.courses = [{ innerText: '目标课程\n2学时', children: [], offsetParent: {}, click() { clicks++; } }];
+    await t.mainLoop(); t.advance(1000);
+    assert.equal(clicks, 1);
+    assert.equal(t.localStorageMap.has('_kme_tab_closed'), false);
+    assert.match(t.formatDiagnosticLogs(), /清理无课程锁的残留窗口记录/);
+});
+
+test('真实名额锁占满但心跳已过期时，提示名额锁等待而非断言有窗口学习', async () => {
+    const { a, b } = twoWindows(1);
+    assert.equal(await a.tryClaimCourseSlot('held', '占用课程', '1'), true);
+    a.advance(121000); b.advance(121000);
+    b.fixture.video = null;
+    b.fixture.courses = [{ innerText: '另一课程\n2学时', children: [], offsetParent: {} }];
+    await b.mainLoop();
+    assert.match(b.context.document.getElementById('jinpei-hud-status').innerText, /并发名额锁已达上限/);
+    assert.doesNotMatch(b.context.document.getElementById('jinpei-hud-status').innerText, /其他窗口.*学习/);
+    assert.match(b.formatDiagnosticLogs(), /_kme_course_slot_0/);
 });
 
 test('结束后进度归零仍从末尾30秒重播，打勾后清除次数并切换', async () => {
@@ -837,6 +1083,42 @@ test('诊断日志只保留200条，含上下文并在刷新后恢复，可清�
     restored.clearDiagnosticLogs();
     assert.equal(restored.storage.has(t.STORAGE_KEYS.diagnostics), false);
     assert.doesNotMatch(restored.formatDiagnosticLogs(), /记录204/);
+});
+
+test('播放诊断记录同播放器归零和末尾跳转事件，不重复绑定或泄露媒体地址', () => {
+    const t = setup(); const listeners = new Map();
+    const video = t.fixture.video;
+    video.addEventListener = (name, fn) => {
+        assert.equal(listeners.has(name), false); listeners.set(name, fn);
+    };
+    video.currentSrc = 'https://media.invalid/video?token=private';
+    video.currentTime = 98;
+    t.observeVideoPlayback(video); t.observeVideoPlayback(video);
+    video.currentTime = 0; listeners.get('timeupdate')();
+    let logs = t.formatDiagnosticLogs();
+    assert.match(logs, /播放诊断：进度回退/);
+    assert.match(logs, /"currentTime":98/);
+    assert.match(logs, /"currentTime":0/);
+    assert.match(logs, /"sourceChanged":false/);
+    assert.doesNotMatch(logs, /private|media.invalid/);
+    video.currentTime = 70; listeners.get('seeking')(); listeners.get('seeked')();
+    logs = t.formatDiagnosticLogs();
+    assert.match(logs, /播放诊断：seeked/);
+    assert.match(logs, /"currentTime":70/);
+});
+
+test('播放诊断识别换源、播放器替换，忽略已移除播放器事件', () => {
+    const t = setup(); const listeners = new Map(); const old = t.fixture.video;
+    old.addEventListener = (name, fn) => listeners.set(name, fn);
+    old.currentSrc = 'first'; t.observeVideoPlayback(old);
+    old.currentSrc = 'second'; listeners.get('loadstart')();
+    assert.match(t.formatDiagnosticLogs(), /"sourceChanged":true/);
+    t.fixture.video = { ...old, addEventListener() {}, currentTime: 0 };
+    t.observeVideoPlayback(t.fixture.video);
+    assert.match(t.formatDiagnosticLogs(), /"player":2/);
+    const logs = t.formatDiagnosticLogs();
+    listeners.get('ended')();
+    assert.equal(t.formatDiagnosticLogs(), logs);
 });
 
 test('诊断日志复制成功有反馈，剪贴板不可用时选中文本供手动复制', async () => {
@@ -1415,7 +1697,7 @@ test('[并发 4] 目录调度与多窗口唤起：多并发下自动打开新窗
     // t2 应原地等待候选中，不误点击，也不误跳出地图
     assert.equal(c1.clicks, 1, '不应重复点击已占用的课程');
     assert.equal(c2.clicks, 0);
-    assert.match(t2.context.document.getElementById('jinpei-hud-status').innerText, /剩余课程正由其他窗口并发学习中/);
+    assert.match(t2.context.document.getElementById('jinpei-hud-status').innerText, /剩余课程存在其他窗口占用记录 \(2 个\)/);
 });
 
 test('[并发 5] 并发子窗口学完全部课程后自动关闭释放资源', async () => {
