@@ -13,7 +13,14 @@ async function run() {
         : '/usr/bin/google-chrome');
     assert.ok(fs.existsSync(chrome), 'Chrome missing; set CHROME_PATH');
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'conch-browser-test-'));
+    // 一秒静音 WAV，用真实媒体 ended 事件验证平台先归零的顺序。
+    const wav = Buffer.alloc(44 + 16000);
+    wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8);
+    wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(16000, 40);
     const server = http.createServer((_req, res) => {
+        if (_req.url.startsWith('/tail.wav')) { res.setHeader('Content-Type', 'audio/wav'); res.end(wav); return; }
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.end('<!doctype html><html><body><main id="fixture"></main></body></html>');
     });
@@ -60,7 +67,7 @@ async function run() {
         await evaluate(`document.getElementById('fixture').innerHTML = '<div class="group cursor-pointer" data-tp-id="11">地图一<br>学习地图 进行中</div><div class="group cursor-pointer" data-tp-id="12">地图二<br>学习地图 进行中</div>';document.querySelectorAll('[data-tp-id]').forEach(el=>{el.dataset.clicks='0';el.addEventListener('click',()=>{el.dataset.clicks=String(Number(el.dataset.clicks)+1);});});`);
         let source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
         source = source.replace('    setInterval(mainLoop, CONFIG.checkInterval);', '').replace('    setTimeout(mainLoop, 1000);', '');
-        source = source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter=false;window.testApi={state,mainLoop,pauseAutomation,getTaskSelection,getSubVideoKey,getCurrentCourseId,switchToNextSubVideoOrCourse,handleMyTaskPage,saveTaskSelection,setConcurrencySetting};})();');
+        source = source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter=false;CONFIG.debugPlayback=true;window.testApi={state,mainLoop,pauseAutomation,getTaskSelection,getSubVideoKey,getCurrentCourseId,switchToNextSubVideoOrCourse,handleMyTaskPage,saveTaskSelection,setConcurrencySetting,observeVideoPlayback,handleVideoPlayback,formatDiagnosticLogs,hasPlaybackCompletion,isItemCompleted,getCourseOutcomes};})();');
         await evaluate(source);
         await evaluate("testApi.mainLoop();document.getElementById('_kme_tool_host').shadowRoot.querySelectorAll('#jinpei-task-list input')[0].click()");
         assert.deepEqual(await evaluate('testApi.getTaskSelection().ids'), ['12']);
@@ -76,6 +83,62 @@ async function run() {
         await evaluate('testApi.switchToNextSubVideoOrCourse()');
         assert.equal(await evaluate('nextClicks'), 1);
         await evaluate("testApi.pauseAutomation('test finished')");
+        await evaluate(`(async()=>{
+            document.getElementById('first').querySelector('svg').remove();
+            window.tailVideo=document.createElement('video');tailVideo.muted=true;tailVideo.src='/tail.wav';
+            document.getElementById('fixture').appendChild(tailVideo);
+            window.nativeEndSeen=false;window.nativePlayCount=0;
+            tailVideo.addEventListener('ended',()=>{tailVideo.currentTime=0;nativeEndSeen=true;});
+            tailVideo.addEventListener('play',()=>nativePlayCount++);
+            testApi.state.enabled=true;testApi.observeVideoPlayback(tailVideo);await tailVideo.play();
+        })()`);
+        for (let tries = 0; tries < 30 && !await evaluate('nativeEndSeen'); tries++) await delay(100);
+        assert.equal(await evaluate('nativeEndSeen'), true);
+        await evaluate('testApi.handleVideoPlayback(tailVideo)');
+        assert.deepEqual(await evaluate('({switching:testApi.state.isSwitching,plays:nativePlayCount,paused:tailVideo.paused})'),
+            { switching: true, plays: 1, paused: true });
+        assert.match(await evaluate('testApi.formatDiagnosticLogs()'), /"endedEvent":true/);
+        await evaluate("testApi.pauseAutomation('native ended verified')");
+        await evaluate(`(async()=>{
+            tailVideo.addEventListener('ended',()=>{
+                document.getElementById('first').classList.remove('text-primary');
+                document.getElementById('next').classList.add('text-primary');
+                tailVideo.src='/tail.wav?new-section';
+            },{once:true});
+            tailVideo.src='/tail.wav?old-section';nativeEndSeen=false;
+            testApi.state.enabled=true;testApi.observeVideoPlayback(tailVideo);await tailVideo.play();
+        })()`);
+        for (let tries = 0; tries < 30 && !await evaluate('nativeEndSeen'); tries++) await delay(100);
+        assert.equal(await evaluate('nativeEndSeen'), true);
+        assert.equal(await evaluate("testApi.hasPlaybackCompletion(tailVideo,document.getElementById('next'))"), false);
+        await evaluate("testApi.pauseAutomation('automatic next-section verified')");
+        assert.deepEqual(await evaluate(`(()=>{
+            const el=document.createElement('div');
+            el.innerHTML='<div class="truncate">100%客户满意度</div><div>0%</div><svg><path fill="#1677ff"></path></svg>';
+            document.getElementById('fixture').appendChild(el);
+            const pending=testApi.isItemCompleted(el);
+            el.children[1].textContent='100%';const completed=testApi.isItemCompleted(el);el.remove();
+            return {pending,completed};
+        })()`), { pending: false, completed: true });
+        await evaluate(`
+            document.getElementById('fixture').innerHTML='<video muted></video><div class="group cursor-pointer text-primary" data-course-id="101" data-chapter-id="21">已看小节<br>00:01:00<svg data-icon="check"></svg></div><div class="ant5-collapse-item"><div id="chapter-header" class="ant5-collapse-header" aria-expanded="false" aria-controls="chapter-panel">第二章</div><div id="chapter-panel" class="ant5-collapse-content"></div></div>';
+            window.delayedNextClicks=0;
+            document.getElementById('chapter-header').addEventListener('click',()=>{
+                document.getElementById('chapter-header').setAttribute('aria-expanded','true');
+                setTimeout(()=>{
+                    document.getElementById('chapter-panel').innerHTML='<div id="delayed-next" class="group cursor-pointer" data-course-id="101" data-chapter-id="22">未看小节<br>00:01:00</div>';
+                    document.getElementById('delayed-next').addEventListener('click',()=>delayedNextClicks++);
+                },600);
+            });
+            testApi.state.enabled=true;testApi.switchToNextSubVideoOrCourse();
+        `);
+        await delay(300);
+        assert.equal(await evaluate('testApi.getCourseOutcomes().length'), 0);
+        assert.equal(await evaluate('delayedNextClicks'), 0);
+        for (let tries = 0; tries < 40 && !await evaluate('delayedNextClicks'); tries++) await delay(100);
+        assert.equal(await evaluate('delayedNextClicks'), 1);
+        assert.equal(await evaluate('testApi.getCourseOutcomes().length'), 0);
+        await evaluate("testApi.pauseAutomation('delayed chapter verified')");
         const taskFixture = `history.pushState({},'', '/home/my/myTask');document.getElementById('fixture').innerHTML='<div class="group cursor-pointer" data-tp-id="11">地图一<br>学习地图 进行中</div><div class="group cursor-pointer" data-tp-id="12">地图二<br>学习地图 进行中</div>';document.querySelectorAll('[data-tp-id]').forEach(el=>{el.dataset.clicks='0';el.addEventListener('click',()=>{el.dataset.clicks=String(Number(el.dataset.clicks)+1);});});`;
         await evaluate(taskFixture + "testApi.saveTaskSelection({mode:'all'});testApi.setConcurrencySetting(2)");
         const peer = await (await fetch(base + '/json/new?' + encodeURIComponent(url), { method: 'PUT' })).json();
@@ -115,7 +178,7 @@ async function run() {
                 await peerEvaluate('({url:location.href,state:testApi.state,selection:testApi.getTaskSelection()})'));
         }
         assert.deepEqual(assignments.sort((a, b) => b[0] - a[0]), [[1, 0], [0, 1]]);
-        console.log('Chrome passed: task selector on all pages, single clicks, stable IDs, marked-section continuation, and cross-map scheduling with native Web Locks.');
+        console.log('Chrome passed: native ended reset and automatic next-section, strict completion markers, delayed chapter loading, task selector, single clicks, and cross-map scheduling with native Web Locks.');
     } finally {
         if (call && ws?.readyState === WebSocket.OPEN) await call('Browser.close').catch(() => {});
         ws?.close();
