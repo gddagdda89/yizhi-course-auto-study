@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.6.0
+// @version      1.6.1
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.0】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.1】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -57,6 +57,7 @@
         activeTabs: '_kme_active_tabs',   // 并发多标签页活跃状态表
         diagnostics: '_kme_diagnostics', // 当前窗口的最近诊断日志（跨刷新）
         retryEpoch: '_kme_retry_epoch', // 通知暂停窗口清理旧的异常/处理缓存
+        selectedTasks: '_kme_selected_tasks', // 用户明确选择的学习地图
     };
 
     function getStorageItem(keyName, legacyKey) {
@@ -185,17 +186,6 @@
         window.addEventListener('beforeunload', unregisterTab);
     }
 
-    function getCurrentlyActiveCourses() {
-        const active = getActiveTabs();
-        const courses = [];
-        for (const [id, data] of Object.entries(active)) {
-            if (id !== TAB_ID && data && data.courseKey) {
-                courses.push(data.courseKey);
-            }
-        }
-        return courses;
-    }
-
     function isCourseBusyByOtherTab(courseKey, courseTitle, mapId) {
         const active = getActiveTabs();
         const effectiveMapId = mapId || getCurrentMapId();
@@ -203,15 +193,15 @@
             if (id === TAB_ID || !data) continue;
             if (data.mapId && effectiveMapId && data.mapId !== effectiveMapId) continue;
             if (courseKey && (data.courseKey === courseKey || data.courseKey === `${effectiveMapId}::${courseKey}`)) return true;
-            if (courseTitle && (data.courseTitle === courseTitle || data.courseKey === courseTitle)) return true;
-            if (data.courseKey && courseTitle && data.courseKey === courseTitle) return true;
+            if ((!courseKey || courseKey === courseTitle || !data.courseKey || data.courseKey === data.courseTitle) &&
+                courseTitle && (data.courseTitle === courseTitle || data.courseKey === courseTitle)) return true;
         }
         return false;
     }
 
     async function tryClaimCourseSlot(courseKey, courseTitle, mapId) {
         const course = { courseKey, courseTitle, mapId: mapId || getCurrentMapId() };
-        const lockName = '_kme_course_' + JSON.stringify([course.mapId, courseTitle || courseKey]);
+        const lockName = '_kme_course_' + JSON.stringify([course.mapId, courseKey || courseTitle]);
         if (currentClaim) return currentClaim.lockName === lockName;
         if (typeof navigator === 'undefined' || !navigator.locks) {
             throw new Error('浏览器不支持跨窗口课程锁，请使用新版 Chrome');
@@ -304,11 +294,11 @@
     function saveCourseOutcome(status, failedSubKeys = []) {
         const mapId = currentClaim?.course.mapId || getCurrentMapId() || 'global';
         const title = currentClaim?.course.courseTitle || getCurrentCourseTitle() || 'unknown';
-        const key = currentClaim?.course.courseKey || title;
+        const key = getCurrentCourseId() || currentClaim?.course.courseKey || title;
         const storageKey = COURSE_OUTCOME_PREFIX + JSON.stringify([mapId, key]);
-        const previous = getCourseOutcomes().find(value => value.mapId === mapId && (value.aliases.includes(key) || value.aliases.includes(title)));
+        const previous = getCourseOutcomes().find(value => value.mapId === mapId && value.aliases.includes(key));
         const value = { mapId, mapTitle: state.currentTask || getMapTitleFromPage(), title, status,
-            aliases: [...new Set([key, title])], failedSubKeys: [...new Set([...(previous?.failedSubKeys || []), ...failedSubKeys])], updatedAt: Date.now() };
+            aliases: [key], failedSubKeys: [...new Set([...(previous?.failedSubKeys || []), ...failedSubKeys])], updatedAt: Date.now() };
         if (status === 'completed') value.failedSubKeys = [];
         try {
             localStorage.setItem(storageKey, JSON.stringify(value));
@@ -329,10 +319,10 @@
         if (isItemCompleted(item)) return 'completed';
         const key = getCourseKeyFromItem(item);
         const title = (item.innerText || '').split('\n')[0].trim();
-        const outcome = getCourseOutcomes().find(value => value.mapId === mapId && (value.aliases.includes(key) || value.aliases.includes(title)));
+        const outcome = getCourseOutcomes().find(value => value.mapId === mapId && value.aliases.includes(key));
         if (outcome) return outcome.status;
         // 历史版本只记录“已处理”，不能据此声称平台已完成。
-        if (isCourseHandled(mapId, key) || isCourseHandled(mapId, title)) return 'unverified';
+        if (isCourseHandled(mapId, key) || (key === title && isCourseHandled(mapId, title))) return 'unverified';
         return 'pending';
     }
 
@@ -425,6 +415,8 @@
                 el.dispatchEvent(new MouseEvent('mousedown', { ...commonProps, buttons: 1, button: 0 }));
                 el.dispatchEvent(new MouseEvent('mouseup', { ...commonProps, buttons: 0, button: 0 }));
                 el.dispatchEvent(new MouseEvent('click', { ...commonProps, buttons: 0, button: 0 }));
+                // 已派发一次 click，不能再调用 .click()；即使默认行为被取消也不重复点击。
+                return;
             }
         } catch (_) {}
 
@@ -788,7 +780,7 @@
                 <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
                     <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.0</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.1</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -899,6 +891,13 @@
                 </div>
 
                 <!-- 底部提示 -->
+                <details id="jinpei-task-selection" style="display: none; margin-top: 8px; font-size: 11px; color: #64748b;">
+                    <summary style="cursor: pointer;">选择学习任务</summary>
+                    <div id="jinpei-task-list" style="max-height: 150px; overflow-y: auto; padding: 6px 0;"></div>
+                    <button id="jinpei-task-all" type="button">全选</button>
+                    <button id="jinpei-task-clear" type="button">清空</button>
+                    <span>暂停时可修改</span>
+                </details>
                 <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309;">
                     <span id="jinpei-outcome-summary"></span>
                     <button id="jinpei-retry-skipped" type="button" style="border: 0; background: transparent; color: #64748b; font-size: 10px; cursor: pointer; padding: 2px;">重试异常</button>
@@ -941,6 +940,13 @@
         getHUDElement('jinpei-diagnostics-copy').addEventListener('click', copyDiagnosticLogs);
         getHUDElement('jinpei-diagnostics-clear').addEventListener('click', clearDiagnosticLogs);
         getHUDElement('jinpei-retry-skipped').addEventListener('click', retrySkippedCourses);
+        getHUDElement('jinpei-task-all').addEventListener('click', () => {
+            if (!state.enabled) { saveTaskSelection({ mode: 'all' }); renderTaskSelection(true); }
+        });
+        getHUDElement('jinpei-task-selection').addEventListener('toggle', clampHUDPosition);
+        getHUDElement('jinpei-task-clear').addEventListener('click', () => {
+            if (!state.enabled) { saveTaskSelection({ mode: 'ids', ids: [] }); renderTaskSelection(true); }
+        });
         updateOutcomeHUD();
 
         // 边界吸附与溢出校正：保证 HUD 在折叠、展开或窗口缩放时始终完整可见不换行
@@ -1040,6 +1046,16 @@
 
         // 开始 / 暂停切换
         toggleBtn.addEventListener('click', () => {
+            if (!state.enabled) {
+                const selection = getTaskSelection();
+                if (!selection && getCurrentMapId()) saveTaskSelection({ mode: 'ids', ids: [getCurrentMapId()] });
+                else if (!selection || (selection.mode === 'ids' && !selection.ids.length)) {
+                    renderTaskSelection(true);
+                    getHUDElement('jinpei-task-selection').open = true;
+                    updateHUD('请先在任务中心勾选要学习的任务。');
+                    return;
+                }
+            }
             state.enabled = !state.enabled;
             if (state.enabled) {
                 setStorageItem(STORAGE_KEYS.running, 'true');
@@ -1494,9 +1510,38 @@
         return "";
     }
 
+    // 只读平台已有数据，不修改 React 状态，也不拦截平台请求。
+    function getPlatformEntityId(el, kind) {
+        if (!el) return '';
+        const attrs = kind === 'chapter' ? ['data-chapter-id', 'data-section-id', 'data-id'] :
+            kind === 'course' ? ['data-course-id', 'data-id'] : ['data-task-id', 'data-tp-id', 'data-id'];
+        for (const name of attrs) {
+            const value = el.getAttribute?.(name);
+            if (value) return String(value);
+        }
+        try {
+            const fiberKey = Object.getOwnPropertyNames(el).find(key => /^__react(Fiber|InternalInstance)\$/.test(key));
+            let fiber = fiberKey && el[fiberKey];
+            let keyedId = '';
+            for (let depth = 0; fiber && depth < 4; depth++, fiber = fiber.return) {
+                const p = fiber.memoizedProps || {};
+                const item = p.item || p.data || p.record || {};
+                const value = kind === 'chapter' ? p.section?.id || p.chapter?.id || p.chapterId :
+                    kind === 'course' ? p.section?.courseId || p.courseId || p.course?.id || p.courseInfo?.courseVo?.id || item.courseId || item.relationId :
+                    p.tpId || p.task?.tpId || p.task?.id || item.tpId || item.trainingId || item.id;
+                if (typeof value === 'string' || (typeof value === 'number' && Number.isSafeInteger(value))) return String(value);
+                if (!keyedId && /^\d+$/.test(fiber.key || '')) keyedId = fiber.key;
+            }
+            if (keyedId) return keyedId;
+        } catch (_) {}
+        return '';
+    }
+
     // 从任务卡片提取 Task ID
     function getTaskIdFromCard(card) {
         if (!card) return "";
+        const platformId = getPlatformEntityId(card, 'task');
+        if (platformId) return platformId;
         const id = (typeof card.getAttribute === 'function' ? (card.getAttribute('data-id') || card.getAttribute('id')) : null) || (card.dataset && card.dataset.id);
         if (id) return id;
         const link = typeof card.querySelector === 'function' ? card.querySelector('a[href*="/training/"]') : null;
@@ -1510,6 +1555,8 @@
     // 从课程条目提取唯一标识（优先 ID，兜底标题）
     function getCourseKeyFromItem(c) {
         if (!c) return "";
+        const platformId = getPlatformEntityId(c, 'course');
+        if (platformId) return platformId;
         const id = (typeof c.getAttribute === 'function' ? (c.getAttribute('data-id') || c.getAttribute('data-course-id') || c.getAttribute('id')) : null) || (c.dataset && (c.dataset.id || c.dataset.courseId));
         if (id) return id;
         const link = typeof c.querySelector === 'function' ? c.querySelector('a[href*="/course/"], a[href*="/courseplay/"]') : null;
@@ -1610,8 +1657,12 @@
 
     // 提取当前课程在 URL 中的 ID
     function getCurrentCourseId() {
+        const active = Array.from(document.querySelectorAll('div.group.cursor-pointer, [class*="min-h-10"][class*="cursor-pointer"]'))
+            .find(el => /\d{1,2}:\d{2}/.test(el.innerText || '') && isSubVideoActive(el));
+        const platformId = getPlatformEntityId(active, 'course');
+        if (platformId) return platformId;
         const path = (location && (location.pathname || location.href)) || "";
-        const m = path.match(/\/(?:study|courseplay)\/(\d+)/);
+        const m = path.match(/\/courseplay\/(\d+)/);
         return m ? m[1] : "";
     }
 
@@ -1629,9 +1680,9 @@
     function getSubVideoKey(el) {
         if (!el) return "";
         const mapId = getCurrentMapId() || 'global';
-        const courseTitle = getCurrentCourseTitle() || 'unknown';
-        const subTitle = getSubVideoTitle(el);
-        return `${mapId}::${courseTitle}::${subTitle}`;
+        const courseKey = getPlatformEntityId(el, 'course') || getCurrentCourseId() || currentClaim?.course.courseKey || getCurrentCourseTitle() || 'unknown';
+        const subKey = getPlatformEntityId(el, 'chapter') || getSubVideoTitle(el);
+        return `${mapId}::${courseKey}::${subKey}`;
     }
 
     function getFailedSubVideos() {
@@ -2111,6 +2162,63 @@
             .filter(c => /学习地图|进行中|截止/.test(c.innerText || '') && c.offsetParent !== null);
     }
 
+    function getTaskSelection() {
+        try {
+            const value = JSON.parse(getLocalItem(STORAGE_KEYS.selectedTasks, 'null'));
+            return value?.mode === 'all' || (value?.mode === 'ids' && Array.isArray(value.ids)) ? value : null;
+        } catch (_) { return null; }
+    }
+
+    function saveTaskSelection(selection) {
+        localStorage.setItem(STORAGE_KEYS.selectedTasks, JSON.stringify(selection));
+    }
+
+    function taskSelectionKey(card) {
+        return getTaskIdFromCard(card) || 'title:' + (card.innerText || '').split('\n')[0].trim();
+    }
+
+    function isTaskSelected(card) {
+        const selection = getTaskSelection();
+        return selection?.mode === 'all' || !!selection?.ids?.includes(taskSelectionKey(card));
+    }
+
+    let taskSelectionRenderKey = '';
+    function renderTaskSelection(force = false) {
+        const panel = getHUDElement('jinpei-task-selection');
+        const list = getHUDElement('jinpei-task-list');
+        if (!panel || !list) return;
+        const onTasks = location.href.includes('/home/my/myTask');
+        panel.style.display = onTasks ? 'block' : 'none';
+        if (!onTasks) return;
+        const cards = getTaskCards();
+        getHUDElement('jinpei-task-all').disabled = state.enabled;
+        getHUDElement('jinpei-task-clear').disabled = state.enabled;
+        const renderKey = JSON.stringify([state.enabled, getTaskSelection(), cards.map(card => [taskSelectionKey(card), card.innerText])]);
+        if (!force && renderKey === taskSelectionRenderKey) return;
+        taskSelectionRenderKey = renderKey;
+        list.textContent = '';
+        for (const card of cards) {
+            const label = document.createElement('label');
+            label.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0;';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = isTaskSelected(card);
+            checkbox.disabled = state.enabled;
+            const text = document.createElement('span');
+            text.style.cssText = 'min-width:0;overflow-wrap:anywhere;';
+            text.textContent = (card.innerText || '').split('\n')[0];
+            label.append(checkbox, text);
+            checkbox.addEventListener('change', () => {
+                if (state.enabled) return;
+                const previous = getTaskSelection();
+                const ids = new Set(previous?.mode === 'all' ? cards.map(taskSelectionKey) : previous?.ids || []);
+                if (checkbox.checked) ids.add(taskSelectionKey(card)); else ids.delete(taskSelectionKey(card));
+                saveTaskSelection({ mode: 'ids', ids: [...ids] });
+            });
+            list.appendChild(label);
+        }
+    }
+
     function getStudyEntryButton() {
         return Array.from(document.querySelectorAll('button, .ant5-btn, [role="button"]'))
             .find(b => /进入学习|继续学习|去学习/.test((b.innerText || '').trim()) && b.offsetParent !== null);
@@ -2137,14 +2245,21 @@
             return;
         }
 
+        if (!getTaskSelection() || (getTaskSelection().mode === 'ids' && !getTaskSelection().ids.length)) {
+            pauseAutomation('请先勾选要学习的任务，再点击开始。');
+            renderTaskSelection(true);
+            return;
+        }
+
         const handledMaps = getHandledMaps();
 
         // 寻找第一个未完成且未被跳过处理的任务（防止跳过考试后因“进行中”死循环重入）
         let targetCard = null;
         for (const card of cards) {
+            if (!isTaskSelected(card)) continue;
             const title = (card.innerText.split('\n')[0] || '').trim();
             const id = getTaskIdFromCard(card);
-            const isHandled = (id && handledMaps.includes(id)) || (title && handledMaps.includes(title));
+            const isHandled = id ? handledMaps.includes(id) : title && handledMaps.includes(title);
             if (!isItemCompleted(card) && !isHandled) {
                 targetCard = card;
                 break;
@@ -2158,6 +2273,7 @@
             updateHUD(`进入任务: ${title}`, title);
             diagnosticConsole.log("【神奇海螺】找到未完成任务，正在点击进入:", title);
             setManagedTimeout(() => {
+                if (!isTaskSelected(targetCard)) { pauseAutomation('任务选择已改变，请重新开始。'); return; }
                 simulateHumanClick(targetCard);
                 waitForPageReady('任务学习入口加载', () =>
                     (location.href.includes('/home/training/detail/') && !!getStudyEntryButton()) || isStudyPageReady());
@@ -2221,6 +2337,12 @@
 
     async function processStudyPage() {
         if (pageWaitActive || learningRecordPending) return;
+        const selection = getTaskSelection();
+        const mapId = getCurrentMapId();
+        if (selection?.mode === 'ids' && mapId && !selection.ids.includes(mapId) && !selection.ids.includes('title:' + state.currentTask)) {
+            pauseAutomation('当前学习地图未勾选，已暂停。请在任务中心修改选择。');
+            return;
+        }
         const pageUrl = location.href;
         const generation = claimGeneration;
         const video = document.querySelector('video');
@@ -2364,6 +2486,22 @@
         }
 
         // 情况 2: 页面已处于视频播放状态
+        const detectedId = getCurrentCourseId();
+        if (detectedId && currentClaim && detectedId !== currentClaim.course.courseKey) {
+            unregisterTab();
+            for (const timer of activeTimers) clearTimeout(timer);
+            activeTimers.clear();
+            pageWaitGeneration++;
+            pageWaitActive = false;
+            learningRecordPending = false;
+            completionReplayGeneration++;
+            completionReplayMemory = null;
+            state.syncRetryCount = 0;
+            state.currentCourse = '';
+            state.isSwitching = false;
+            state.isActionPending = false;
+            return;
+        }
         if (!currentClaim && !state.isSwitching && !state.isActionPending) {
             const title = getCurrentCourseTitle();
             const claimed = await tryClaimCourseSlot(getCurrentCourseId() || title, title, getCurrentMapId());
@@ -2582,8 +2720,7 @@
         const outcome = failedSubKeys.length ? 'skipped' : hasExam ? 'exam' : 'completed';
         if (!saveCourseOutcome(outcome, failedSubKeys)) return;
         if (courseId) markCourseHandled(mapId, courseId);
-        if (courseTitle) markCourseHandled(mapId, courseTitle);
-        if (state.currentCourse) markCourseHandled(mapId, state.currentCourse);
+        if (!courseId && courseTitle) markCourseHandled(mapId, courseTitle);
 
         const allCoursesProg = getStorageItem(STORAGE_KEYS.mapProgress, 'jinpei_map_progress') || state.allCoursesProgress || "";
 
@@ -2633,6 +2770,7 @@
     function mainLoop() {
         syncRetryEpoch();
         createHUD();
+        renderTaskSelection();
 
         // 未手动启动时，不执行任何自动化逻辑（包括不自动弹窗确认、不自动播放、不自动跳转）
         if (!state.enabled) return;
