@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.6.5
+// @version      1.7.0
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,9 @@
 (function () {
     'use strict';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.5】脚本初始化启动...");
+const SCRIPT_VERSION = '1.7.0';
+
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.0】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -41,6 +43,8 @@
         watchdogMaxConsecutiveFails: 3, // 看门狗：连续卡死加载失败最大容忍小节数 (3 节)
         defaultConcurrency: 1,        // 默认并发课程数 (1)
         maxConcurrency: 6,            // 最大并发课程数 (6)
+        updateCheckInterval: 1800000, // 远程新版本自检周期 (30 分钟)
+        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js',
     };
 
     // 会话存储与跨标签存储脱敏键名映射（前缀去标识化，并兼容历史键名读取）
@@ -60,9 +64,11 @@
         retryEpoch: '_kme_retry_epoch', // 通知暂停窗口清理旧的异常/处理缓存
         selectedTasks: '_kme_selected_tasks', // 用户明确选择的学习地图
         taskCatalog: '_kme_task_catalog', // 只缓存任务 ID 和显示名称，供任意页面选择
+        lastUpdateCheck: '_kme_last_update_check', // 最近一次检查远程版本时间戳
+        latestVersion: '_kme_latest_version',     // 缓存的远程最新版本号
     };
 
-    function getStorageItem(keyName, legacyKey) {
+function getStorageItem(keyName, legacyKey) {
         try {
             return sessionStorage.getItem(keyName) ?? (legacyKey ? sessionStorage.getItem(legacyKey) : null);
         } catch (_) {
@@ -109,7 +115,7 @@
         } catch (_) {}
     }
 
-    // 跨标签页并发调度支持 (唯一 Tab 标识与多开协调)
+// 跨标签页并发调度支持 (唯一 Tab 标识与多开协调)
     const TAB_ID = 'kme_' + Math.random().toString(36).slice(2, 8) + '_' + Date.now().toString(36);
     const TAB_STORAGE_PREFIX = '_kme_tab_';
     const TAB_HEARTBEAT_TTL = 120000;
@@ -310,7 +316,7 @@
         });
     }
 
-    // 全局状态管理：默认首次打开时不自动运行；若用户手动点击了【开始学习】，则在当前标签页的流转与刷新中持续保持运行！
+// 全局状态管理：默认首次打开时不自动运行；若用户手动点击了【开始学习】，则在当前标签页的流转与刷新中持续保持运行！
     const hasLiveActiveTabs = Object.keys(getActiveTabs()).length > 0;
     const isSessionRunning = getStorageItem(STORAGE_KEYS.running, 'jinpei_auto_running') === 'true' ||
         (hasLiveActiveTabs && getLocalItem(STORAGE_KEYS.running) === 'true');
@@ -331,6 +337,7 @@
         syncRetryCount: 0,         // 当前小节心跳同步重试计数
         lastJumpTime: 0,
         lastTabSpawnTime: 0,       // 并发子窗口唤起防抖节流
+        remoteVersion: '',         // 远程检测到的最新版本号
     };
 
     const COURSE_OUTCOME_PREFIX = '_kme_course_outcome_';
@@ -440,7 +447,7 @@
         return true;
     }
 
-    // [防检测 1: 拟人随机数与时间抖动发生器 Human Jitter]
+// [防检测 1: 拟人随机数与时间抖动发生器 Human Jitter]
     function randomBetween(min, max) {
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
@@ -487,7 +494,7 @@
         }
     }
 
-    // [防检测 4: Shadow DOM 内部元素寻址隔离器]
+// [防检测 4: Shadow DOM 内部元素寻址隔离器]
     let hudShadowRoot = null;
     function getHUDElement(id) {
         if (hudShadowRoot && typeof hudShadowRoot.getElementById === 'function') {
@@ -773,7 +780,88 @@
         updateHUD(message);
     }
 
+// ==========================================
+    // 后台标签页 Worker 防休眠机制
+    // 利用独立 Web Worker 线程的心跳调度，彻底免疫 Chromium 对后台标签页的定时器节流降频
     // ==========================================
+    function createWorkerInterval(callback, intervalMs) {
+        const minInterval = Math.max(200, intervalMs || 2000);
+
+        // 在 Node.js 测试环境或不支持 Web Worker 的环境平滑回退至原生 setInterval
+        if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+            const id = typeof setInterval === 'function' ? setInterval(callback, minInterval) : null;
+            return {
+                type: 'interval',
+                id,
+                clear() {
+                    try {
+                        if (typeof clearInterval === 'function') clearInterval(id);
+                    } catch (_) {}
+                }
+            };
+        }
+
+        try {
+            const workerCode = `
+                let timer = null;
+                self.onmessage = function(e) {
+                    if (e.data && e.data.type === 'start') {
+                        if (timer) clearInterval(timer);
+                        timer = setInterval(function() {
+                            self.postMessage({ type: 'tick' });
+                        }, Math.max(200, e.data.interval || 2000));
+                    } else if (e.data && e.data.type === 'stop') {
+                        if (timer) {
+                            clearInterval(timer);
+                            timer = null;
+                        }
+                    }
+                };
+            `;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            const workerUrl = URL.createObjectURL(blob);
+            const worker = new Worker(workerUrl);
+
+            worker.onmessage = function(e) {
+                if (e.data && e.data.type === 'tick') {
+                    try {
+                        callback();
+                    } catch (err) {
+                        console.error('[神奇海螺] Worker 定时执行回调异常:', err);
+                    }
+                }
+            };
+
+            worker.postMessage({ type: 'start', interval: minInterval });
+
+            return {
+                type: 'worker',
+                worker,
+                workerUrl,
+                clear() {
+                    try {
+                        worker.postMessage({ type: 'stop' });
+                        worker.terminate();
+                        URL.revokeObjectURL(workerUrl);
+                    } catch (_) {}
+                }
+            };
+        } catch (_) {
+            // 如遇到严格 CSP 限制（如禁止 blob: Worker），自动降级为原生 setInterval
+            const id = typeof setInterval === 'function' ? setInterval(callback, minInterval) : null;
+            return {
+                type: 'interval',
+                id,
+                clear() {
+                    try {
+                        if (typeof clearInterval === 'function') clearInterval(id);
+                    } catch (_) {}
+                }
+            };
+        }
+    }
+
+// ==========================================
     // 1. 悬浮 HUD 状态面板（现代浅色高透光磨砂玻璃态设计 + 可拖拽 + 折叠）
     // ==========================================
     // ==========================================
@@ -840,6 +928,7 @@
             .jinpei-glass.jinpei-collapsed #jinpei-hud-top-bar,
             .jinpei-glass.jinpei-collapsed #jinpei-hud-title-text,
             .jinpei-glass.jinpei-collapsed #jinpei-hud-version,
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-update-badge,
             .jinpei-glass.jinpei-collapsed #jinpei-hud-header-right,
             .jinpei-glass.jinpei-collapsed #jinpei-hud-body {
                 display: none !important;
@@ -930,7 +1019,73 @@
         root.appendChild(style);
     }
 
-    function createHUD() {
+// ==========================================
+    // HUD 版本自检与更新提醒模块
+    // 定时异步比对远程最新版本，在 HUD 上以醒目徽标提示用户一键更新
+    // ==========================================
+    function semverCompare(a, b) {
+        const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+        const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+            const na = pa[i] || 0;
+            const nb = pb[i] || 0;
+            if (na > nb) return 1;
+            if (na < nb) return -1;
+        }
+        return 0;
+    }
+
+    function applyUpdateNotice(remoteVersion) {
+        state.remoteVersion = remoteVersion;
+        const badge = getHUDElement('jinpei-hud-update-badge');
+        if (badge) {
+            badge.innerText = `更新 v${remoteVersion}`;
+            badge.href = CONFIG.updateUrl;
+            badge.title = `发现新版本 v${remoteVersion} (当前 v${SCRIPT_VERSION})，点击跳转更新脚本`;
+            badge.style.display = 'inline-block';
+        }
+        const header = getHUDElement('jinpei-hud-header');
+        if (header && header.classList?.contains('jinpei-collapsed')) {
+            header.title = `🐚 神奇海螺 · 发现新版本 v${remoteVersion} (点击展开)`;
+        }
+    }
+
+    async function checkScriptUpdate(force = false) {
+        if (typeof fetch !== 'function') return;
+
+        // 先读取已缓存的最新版本
+        const cachedVersion = getLocalItem(STORAGE_KEYS.latestVersion, '');
+        if (cachedVersion && semverCompare(cachedVersion, SCRIPT_VERSION) > 0) {
+            applyUpdateNotice(cachedVersion);
+        }
+
+        const lastCheck = parseInt(getLocalItem(STORAGE_KEYS.lastUpdateCheck, '0'), 10) || 0;
+        if (!force && Date.now() - lastCheck < CONFIG.updateCheckInterval) {
+            return;
+        }
+
+        try {
+            const resp = await fetch(CONFIG.updateUrl, { cache: 'no-cache' });
+            if (!resp.ok) return;
+            const text = await resp.text();
+            const match = text.match(/\/\/\s*@version\s+([0-9.]+)/);
+            if (match && match[1]) {
+                const remoteVersion = match[1].trim();
+                setLocalItem(STORAGE_KEYS.lastUpdateCheck, String(Date.now()));
+                if (semverCompare(remoteVersion, SCRIPT_VERSION) > 0) {
+                    setLocalItem(STORAGE_KEYS.latestVersion, remoteVersion);
+                    applyUpdateNotice(remoteVersion);
+                    diagnosticConsole.log(`【神奇海螺】检测到新版本: v${remoteVersion} (当前: v${SCRIPT_VERSION})，可点击 HUD 上的更新按钮前往安装。`);
+                } else {
+                    setLocalItem(STORAGE_KEYS.latestVersion, '');
+                }
+            }
+        } catch (_) {
+            // 静默容错，不干扰主要播放流程
+        }
+    }
+
+function createHUD() {
         if (getHUDElement('jinpei-hud')) return;
 
         let host = document.getElementById('_kme_tool_host');
@@ -999,6 +1154,12 @@
         const dotBg = state.enabled ? "#10b981" : "#f59e0b";
         const dotAnim = state.enabled ? "jinpei-pulse 2s infinite ease-in-out" : "jinpei-amber-pulse 2s infinite ease-in-out";
 
+        const cachedVer = getLocalItem(STORAGE_KEYS.latestVersion, '');
+        if (cachedVer && semverCompare(cachedVer, SCRIPT_VERSION) > 0) {
+            state.remoteVersion = cachedVer;
+        }
+        const hasUpdate = Boolean(state.remoteVersion && semverCompare(state.remoteVersion, SCRIPT_VERSION) > 0);
+
         hud.innerHTML = `
             <!-- 顶部炫彩渐变微光线条 -->
             <div id="jinpei-hud-top-bar" style="height: 3px; background: linear-gradient(90deg, #38bdf8 0%, #818cf8 50%, #f472b6 100%); display: ${isCollapsed ? 'none' : 'block'};"></div>
@@ -1007,12 +1168,13 @@
             <div id="jinpei-hud-header" style="${isCollapsed 
                 ? 'width: 42px; height: 42px; padding: 0; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; border-bottom: none;' 
                 : 'padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; border-bottom: 1px solid rgba(0, 0, 0, 0.06); white-space: nowrap;'
-            }" title="${isCollapsed ? '点击展开神奇海螺' : ''}">
+            }" title="${isCollapsed ? `🐚 神奇海螺 · ${state.enabled ? (state.videoProgress || state.statusText || '运行中') : '已暂停'}${hasUpdate ? ` · 发现新版本 v${state.remoteVersion}` : ''} (点击展开)` : ''}">
                 <div id="jinpei-hud-header-left" style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap; ${isCollapsed ? 'justify-content: center; width: 100%; height: 100%; gap: 0;' : ''}">
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.5</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.0</span>
+                    <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: none; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -1225,6 +1387,8 @@
                 if (topBarEl) topBarEl.style.display = 'none';
                 if (titleTextEl) titleTextEl.style.display = 'none';
                 if (versionEl) versionEl.style.display = 'none';
+                const updateBadgeEl = getHUDElement('jinpei-hud-update-badge');
+                if (updateBadgeEl) updateBadgeEl.style.display = 'none';
                 if (headerRight) headerRight.style.display = 'none';
                 if (miniStatusEl) miniStatusEl.style.display = 'none';
                 if (header) {
@@ -1234,7 +1398,9 @@
                     header.style.justifyContent = 'center';
                     header.style.borderBottom = 'none';
                     const statusSummary = state.enabled ? (state.videoProgress || state.statusText || '运行中') : '已暂停';
-                    header.title = `🐚 神奇海螺 · ${statusSummary} (点击展开)`;
+                    const hasUpdate = state.remoteVersion && semverCompare(state.remoteVersion, SCRIPT_VERSION) > 0;
+                    const updateSuffix = hasUpdate ? ` · 发现新版本 v${state.remoteVersion}` : '';
+                    header.title = `🐚 神奇海螺 · ${statusSummary}${updateSuffix} (点击展开)`;
                 }
                 if (headerLeft) {
                     headerLeft.style.width = '100%';
@@ -1268,6 +1434,9 @@
                 if (topBarEl) topBarEl.style.display = 'block';
                 if (titleTextEl) titleTextEl.style.display = 'inline';
                 if (versionEl) versionEl.style.display = 'inline-block';
+                const updateBadgeEl = getHUDElement('jinpei-hud-update-badge');
+                const hasUpdate = state.remoteVersion && semverCompare(state.remoteVersion, SCRIPT_VERSION) > 0;
+                if (updateBadgeEl) updateBadgeEl.style.display = hasUpdate ? 'inline-block' : 'none';
                 if (headerRight) headerRight.style.display = 'flex';
                 if (miniStatusEl) miniStatusEl.style.display = 'none';
                 if (header) {
@@ -1609,7 +1778,7 @@
         }
     }
 
-    // ==========================================
+// ==========================================
     // 2. 防暂停与防后台挂机机制（动态联动：运行生效，暂停释放）
     // ==========================================
     function enableAntiPause() {
@@ -1656,7 +1825,7 @@
         }
     }
 
-    // 智能关闭弹窗：严格限定在弹窗/遮罩层容器内部寻找，避免误触页面常规按钮，排除神奇海螺面板本身
+// 智能关闭弹窗：严格限定在弹窗/遮罩层容器内部寻找，避免误触页面常规按钮，排除神奇海螺面板本身
     function autoDismissDialogs() {
         if (!state.enabled) return;
 
@@ -1721,7 +1890,7 @@
         return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
-    // ==========================================
+// ==========================================
     // 3. 通用 DOM 检查工具函数 (兼容多种目录结构与已学标记)
     // ==========================================
 
@@ -2085,7 +2254,7 @@
         return m ? m[1] : "";
     }
 
-    // ==========================================
+// ==========================================
     // 3.1 看门狗服务 (Watchdog: 进度卡死检测、自动刷新、异常小节跳过与终极暂停保护)
     // ==========================================
     function getSubVideoTitle(el) {
@@ -2558,36 +2727,7 @@
         }
     }
 
-    // ==========================================
-    // 4. 核心业务流程
-    // ==========================================
-
-    // 流程 A: 登录状态检测与重定向
-    function handleLoginAndIndex() {
-        const url = location.href;
-        if (url.includes('/home/login')) {
-            updateHUD("等待用户登录账号...");
-            return;
-        }
-
-        if (url.includes('/home/index') || url.includes('/home/portal')) {
-            const hasToken = localStorage.getItem('_l_KPLiPs') || document.cookie.includes('_c_WBKFRo');
-            const hasUserArea = document.querySelector('.header__b48WI, .user, [class*="user"], [class*="avatar"]');
-
-            if (hasToken || hasUserArea) {
-                if (state.isActionPending) return;
-                state.isActionPending = true;
-                updateHUD("检测到已登录，正在跳转任务中心...");
-                setManagedTimeout(() => {
-                    location.href = CONFIG.myTaskUrl;
-                }, 1500);
-            } else {
-                updateHUD("请先完成登录...");
-            }
-        }
-    }
-
-    function getTaskCards() {
+function getTaskCards() {
         return Array.from(document.querySelectorAll('div.group.cursor-pointer, .grid > div'))
             .filter(c => /学习地图|进行中|截止/.test(c.innerText || '') && c.offsetParent !== null);
     }
@@ -2800,6 +2940,32 @@
             (typeof video.readyState !== 'number' || video.readyState >= 2) &&
             getAllSubVideoItems().some(isSubVideoActive);
     }
+
+// 流程 A: 登录状态检测与重定向
+    function handleLoginAndIndex() {
+        const url = location.href;
+        if (url.includes('/home/login')) {
+            updateHUD("等待用户登录账号...");
+            return;
+        }
+
+        if (url.includes('/home/index') || url.includes('/home/portal')) {
+            const hasToken = localStorage.getItem('_l_KPLiPs') || document.cookie.includes('_c_WBKFRo');
+            const hasUserArea = document.querySelector('.header__b48WI, .user, [class*="user"], [class*="avatar"]');
+
+            if (hasToken || hasUserArea) {
+                if (state.isActionPending) return;
+                state.isActionPending = true;
+                updateHUD("检测到已登录，正在跳转任务中心...");
+                setManagedTimeout(() => {
+                    location.href = CONFIG.myTaskUrl;
+                }, 1500);
+            } else {
+                updateHUD("请先完成登录...");
+            }
+        }
+    }
+
 
     // 流程 B: 任务页 (myTask) 检查与自动进入
     let taskDispatchPending = false;
@@ -3386,7 +3552,7 @@
         }
     }
 
-    // ==========================================
+// ==========================================
     // 5. 主循环调度器
     // ==========================================
     function mainLoop() {
@@ -3420,7 +3586,6 @@
         }
     }
 
-    recordDiagnostic('INFO', '脚本初始化 v1.6.5，运行状态：' + (state.enabled ? '已启动' : '待启动'));
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
         window.addEventListener('beforeunload', () => {
             if (!state.enabled || !CONFIG.debugPlayback) return;
@@ -3432,7 +3597,10 @@
         });
     }
     enableAntiPause();
-    setInterval(mainLoop, CONFIG.checkInterval);
+    const workerTimer = createWorkerInterval(mainLoop, CONFIG.checkInterval);
     setTimeout(mainLoop, 1000);
+    checkScriptUpdate().catch(() => {});
+
+    recordDiagnostic('INFO', '脚本初始化 v1.7.0，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')');
 
 })();

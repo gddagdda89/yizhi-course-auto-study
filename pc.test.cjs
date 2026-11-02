@@ -76,11 +76,11 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
         localStorage: { get length() { return localStorageMap.size; }, key: index => [...localStorageMap.keys()][index] ?? null, getItem: key => localStorageMap.get(key) ?? null, setItem: (key, value) => localStorageMap.set(key, value), removeItem: key => localStorageMap.delete(key) },
         console: { log() {}, warn() {}, error() {} }, Date: class extends Date { static now() { return now; } },
         setTimeout(fn, delay) { const id = ++nextTimer; timers.set(id, { fn, at: now + delay }); return id; },
-        clearTimeout(id) { timers.delete(id); }, setInterval() {},
+        clearTimeout(id) { timers.delete(id); }, setInterval() {}, clearInterval() {},
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -1790,7 +1790,7 @@ test('[HUD 最小化 1] 最小化时折叠为单个海螺图标悬浮球，隐�
     assert.match(hud.innerHTML, /id="jinpei-hud-dot"[^>]*top:\s*7px;?[^>]*right:\s*7px/, '折叠时状态绿点应居内定位避免贴边截断');
 });
 
-test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.6.5', async () => {
+test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.7.0', async () => {
     const { t, getShadowRoot } = renderHUDTest([['_kme_pref_col', 'false']]);
     await t.mainLoop();
 
@@ -1804,6 +1804,34 @@ test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本�
     assert.equal(hud.classList.contains('jinpei-collapsed'), false);
 
     assert.match(hud.innerHTML, /id="jinpei-hud-title-text"[^>]*display:\s*inline;?[^>]*>神奇海螺<\/span>/, '展开时标题文字应正常展示');
-    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*>v1\.6\.5<\/span>/, '展开时版本号应显示为 v1.6.5');
+    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*>v1\.7\.0<\/span>/, '展开时版本号应显示为 v1.7.0');
     assert.match(hud.innerHTML, /id="jinpei-hud-top-bar"[^>]*display:\s*block/, '展开时顶部彩条应正常显示');
+});
+
+test('[HUD 更新提醒] 检测到远程新版本时在 HUD 标题栏显示更新徽标与下载链接', async () => {
+    const { t, getShadowRoot } = renderHUDTest([
+        ['_kme_pref_col', 'false'],
+        ['_kme_latest_version', '1.8.0']
+    ]);
+    await t.mainLoop();
+
+    const shadow = getShadowRoot();
+    const hud = shadow.children.find(c => c.id === 'jinpei-hud');
+    assert.ok(hud);
+
+    assert.match(hud.innerHTML, /id="jinpei-hud-update-badge"[^>]*display:\s*inline-block/, '存在新版本时应展示更新徽标');
+    assert.match(hud.innerHTML, />更新 v1\.8\.0<\/a>/, '更新徽标应展示新版本号');
+    assert.match(hud.innerHTML, /href="https:\/\/gh-proxy\.org\/[^"]*pc\.js"/, '更新徽标应链接到 userscript 下载地址');
+});
+
+test('[后台 Worker 防休眠] 支持创建定时调度器并在不支持 Worker 时平滑回退', async () => {
+    const t = setup();
+    assert.equal(typeof t.createWorkerInterval, 'function', '应提供 createWorkerInterval 调度器构造函数');
+
+    let _tickCount = 0;
+    const timer = t.createWorkerInterval(() => { _tickCount++; }, 50);
+    assert.ok(timer, '调度器应正常返回控制句柄');
+    assert.ok(timer.type === 'interval' || timer.type === 'worker', '句柄类型应为 worker 或 interval 回退');
+
+    timer.clear();
 });

@@ -2,11 +2,13 @@
   "name": "magic-conch-userscript",
   "private": true,
   "scripts": {
-    "lint": "eslint pc.js pc.test.cjs release-check.cjs release-check.test.cjs browser.test.cjs eslint.config.cjs",
+    "build": "node build.cjs",
+    "check:build": "node build.cjs --check",
+    "lint": "eslint pc.js pc.test.cjs release-check.cjs release-check.test.cjs browser.test.cjs eslint.config.cjs build.cjs",
     "test": "node --test pc.test.cjs release-check.test.cjs",
     "test:browser": "node browser.test.cjs",
     "check:release": "node release-check.cjs",
-    "check": "node --check pc.js && npm run lint && npm test && npm run check:release && npm run test:browser"
+    "check": "npm run check:build && node --check pc.js && npm run lint && npm test && npm run check:release && npm run test:browser"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
