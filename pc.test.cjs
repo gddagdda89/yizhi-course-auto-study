@@ -1779,6 +1779,7 @@ test('[HUD 最小化 1] 最小化时折叠为单个海螺图标悬浮球，隐�
     assert.equal(hud.style.width, '42px', '折叠时 HUD 宽度应为 42px 紧凑正圆');
     assert.equal(hud.style.height, '42px', '折叠时 HUD 高度应为 42px');
     assert.equal(hud.style.borderRadius, '50%', '折叠时 HUD 边框应为 50% 正圆');
+    assert.equal(hud.style.overflow, 'visible', '折叠时 HUD overflow 应为 visible 避免状态指示圆点被截断');
     assert.ok(hud.classList.contains('jinpei-collapsed'), '折叠时应具有 jinpei-collapsed 样式类名');
 
     // 检查 HTML 结构：标题文字在折叠时为 display: none，不展示 title
@@ -1786,9 +1787,10 @@ test('[HUD 最小化 1] 最小化时折叠为单个海螺图标悬浮球，隐�
     assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*display:\s*none/, '折叠时版本号应隐藏');
     assert.match(hud.innerHTML, /id="jinpei-hud-top-bar"[^>]*display:\s*none/, '折叠时顶部彩条应隐藏');
     assert.match(hud.innerHTML, /id="jinpei-hud-icon"[^>]*>🐚<\/span>/, '折叠时应展示海螺图标');
+    assert.match(hud.innerHTML, /id="jinpei-hud-dot"[^>]*top:\s*7px;?[^>]*right:\s*7px/, '折叠时状态绿点应居内定位避免贴边截断');
 });
 
-test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.6.4', async () => {
+test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.6.5', async () => {
     const { t, getShadowRoot } = renderHUDTest([['_kme_pref_col', 'false']]);
     await t.mainLoop();
 
@@ -1798,9 +1800,10 @@ test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本�
 
     assert.equal(hud.style.width, '320px', '展开时宽度应为 320px');
     assert.equal(hud.style.borderRadius, '18px', '展开时圆角应为 18px');
+    assert.equal(hud.style.overflow, 'hidden', '展开时圆角应裁剪溢出');
     assert.equal(hud.classList.contains('jinpei-collapsed'), false);
 
     assert.match(hud.innerHTML, /id="jinpei-hud-title-text"[^>]*display:\s*inline;?[^>]*>神奇海螺<\/span>/, '展开时标题文字应正常展示');
-    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*>v1\.6\.4<\/span>/, '展开时版本号应显示为 v1.6.4');
+    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*>v1\.6\.5<\/span>/, '展开时版本号应显示为 v1.6.5');
     assert.match(hud.innerHTML, /id="jinpei-hud-top-bar"[^>]*display:\s*block/, '展开时顶部彩条应正常显示');
 });

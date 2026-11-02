@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.6.4
+// @version      1.6.5
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.4】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.5】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -829,6 +829,7 @@
                 min-width: 42px !important;
                 max-width: 42px !important;
                 cursor: pointer !important;
+                overflow: visible !important;
                 box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(255, 255, 255, 0.75) inset !important;
                 transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease !important;
             }
@@ -868,10 +869,12 @@
             }
             .jinpei-glass.jinpei-collapsed #jinpei-hud-dot {
                 position: absolute !important;
-                top: 5px !important;
-                right: 5px !important;
+                top: 7px !important;
+                right: 7px !important;
                 width: 7px !important;
                 height: 7px !important;
+                box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95) !important;
+                z-index: 2 !important;
             }
             .jinpei-info-box {
                 background: rgba(255, 255, 255, 0.18);
@@ -1006,10 +1009,10 @@
                 : 'padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; border-bottom: 1px solid rgba(0, 0, 0, 0.06); white-space: nowrap;'
             }" title="${isCollapsed ? '点击展开神奇海螺' : ''}">
                 <div id="jinpei-hud-header-left" style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap; ${isCollapsed ? 'justify-content: center; width: 100%; height: 100%; gap: 0;' : ''}">
-                    <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;' : ''}"></div>
+                    <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.4</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.5</span>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
                     <span id="jinpei-hud-mini-status" style="display: none; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
@@ -1217,6 +1220,7 @@
                 hud.style.height = '42px';
                 hud.style.minWidth = '42px';
                 hud.style.borderRadius = '50%';
+                hud.style.overflow = 'visible';
                 if (bodyEl) bodyEl.style.display = 'none';
                 if (topBarEl) topBarEl.style.display = 'none';
                 if (titleTextEl) titleTextEl.style.display = 'none';
@@ -1243,10 +1247,12 @@
                 }
                 if (dot) {
                     dot.style.position = 'absolute';
-                    dot.style.top = '5px';
-                    dot.style.right = '5px';
+                    dot.style.top = '7px';
+                    dot.style.right = '7px';
                     dot.style.width = '7px';
                     dot.style.height = '7px';
+                    dot.style.boxShadow = '0 0 0 1.5px rgba(255, 255, 255, 0.95)';
+                    dot.style.zIndex = '2';
                 }
                 if (minBtn) {
                     minBtn.innerText = '＋';
@@ -1257,6 +1263,7 @@
                 hud.style.height = 'auto';
                 hud.style.minWidth = '320px';
                 hud.style.borderRadius = '18px';
+                hud.style.overflow = 'hidden';
                 if (bodyEl) bodyEl.style.display = 'block';
                 if (topBarEl) topBarEl.style.display = 'block';
                 if (titleTextEl) titleTextEl.style.display = 'inline';
@@ -1284,6 +1291,8 @@
                     dot.style.position = 'static';
                     dot.style.width = '8px';
                     dot.style.height = '8px';
+                    dot.style.boxShadow = 'none';
+                    dot.style.zIndex = 'auto';
                 }
                 if (minBtn) {
                     minBtn.innerText = '−';
@@ -3411,7 +3420,7 @@
         }
     }
 
-    recordDiagnostic('INFO', '脚本初始化 v1.6.4，运行状态：' + (state.enabled ? '已启动' : '待启动'));
+    recordDiagnostic('INFO', '脚本初始化 v1.6.5，运行状态：' + (state.enabled ? '已启动' : '待启动'));
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
         window.addEventListener('beforeunload', () => {
             if (!state.enabled || !CONFIG.debugPlayback) return;
