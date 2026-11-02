@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.6.3
+// @version      1.6.4
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.3】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.6.4】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -821,6 +821,58 @@
                 border-color: rgba(255, 255, 255, 0.7) !important;
                 box-shadow: 0 24px 48px -10px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(255, 255, 255, 0.8) inset !important;
             }
+            /* 折叠/最小化状态：紧凑单个海螺悬浮图标，隐藏标题 */
+            .jinpei-glass.jinpei-collapsed {
+                border-radius: 50% !important;
+                width: 42px !important;
+                height: 42px !important;
+                min-width: 42px !important;
+                max-width: 42px !important;
+                cursor: pointer !important;
+                box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(255, 255, 255, 0.75) inset !important;
+                transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease !important;
+            }
+            .jinpei-glass.jinpei-collapsed:hover {
+                transform: scale(1.08);
+                box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.9) inset !important;
+            }
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-top-bar,
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-title-text,
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-version,
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-header-right,
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-body {
+                display: none !important;
+            }
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-header {
+                width: 42px !important;
+                height: 42px !important;
+                padding: 0 !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                border-bottom: none !important;
+                position: relative !important;
+                cursor: pointer !important;
+            }
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-header-left {
+                width: 100% !important;
+                height: 100% !important;
+                justify-content: center !important;
+                align-items: center !important;
+                gap: 0 !important;
+            }
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-icon {
+                font-size: 21px !important;
+                display: inline-block !important;
+                line-height: 1 !important;
+            }
+            .jinpei-glass.jinpei-collapsed #jinpei-hud-dot {
+                position: absolute !important;
+                top: 5px !important;
+                right: 5px !important;
+                width: 7px !important;
+                height: 7px !important;
+            }
             .jinpei-info-box {
                 background: rgba(255, 255, 255, 0.18);
                 border: 1px solid rgba(255, 255, 255, 0.55);
@@ -925,8 +977,13 @@
         try {
             isCollapsed = getStorageItem(STORAGE_KEYS.hudCollapsed, 'jinpei_hud_collapsed') === 'true';
         } catch (_) {}
-        hud.style.width = isCollapsed ? 'auto' : '320px';
-        hud.style.minWidth = isCollapsed ? '210px' : '320px';
+        hud.style.width = isCollapsed ? '42px' : '320px';
+        hud.style.height = isCollapsed ? '42px' : 'auto';
+        hud.style.minWidth = isCollapsed ? '42px' : '320px';
+        hud.style.borderRadius = isCollapsed ? '50%' : '18px';
+        if (isCollapsed && hud.classList) {
+            hud.classList.add('jinpei-collapsed');
+        }
 
         const btnText = state.enabled ? "暂停自动学习" : "开始自动学习";
         const btnIcon = state.enabled ? "⏸" : "▶";
@@ -941,17 +998,21 @@
 
         hud.innerHTML = `
             <!-- 顶部炫彩渐变微光线条 -->
-            <div style="height: 3px; background: linear-gradient(90deg, #38bdf8 0%, #818cf8 50%, #f472b6 100%);"></div>
+            <div id="jinpei-hud-top-bar" style="height: 3px; background: linear-gradient(90deg, #38bdf8 0%, #818cf8 50%, #f472b6 100%); display: ${isCollapsed ? 'none' : 'block'};"></div>
 
-            <!-- 可拖动顶栏 -->
-            <div id="jinpei-hud-header" style="padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; border-bottom: ${isCollapsed ? 'none' : '1px solid rgba(0, 0, 0, 0.06)'}; white-space: nowrap;">
-                <div style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;">
-                    <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0;"></div>
-                    <span style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0;">🐚 神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.3</span>
+            <!-- 可拖动顶栏 / 最小化单个海螺悬浮图标 -->
+            <div id="jinpei-hud-header" style="${isCollapsed 
+                ? 'width: 42px; height: 42px; padding: 0; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; border-bottom: none;' 
+                : 'padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: move; border-bottom: 1px solid rgba(0, 0, 0, 0.06); white-space: nowrap;'
+            }" title="${isCollapsed ? '点击展开神奇海螺' : ''}">
+                <div id="jinpei-hud-header-left" style="display: flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap; ${isCollapsed ? 'justify-content: center; width: 100%; height: 100%; gap: 0;' : ''}">
+                    <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;' : ''}"></div>
+                    <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
+                    <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.6.4</span>
                 </div>
-                <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
-                    <span id="jinpei-hud-mini-status" style="display: ${isCollapsed ? 'inline-block' : 'none'}; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
+                <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
+                    <span id="jinpei-hud-mini-status" style="display: none; font-size: 11px; color: #0284c7; font-weight: 600; font-family: monospace; white-space: nowrap; flex-shrink: 0;"></span>
                     <button id="jinpei-hud-min-btn" class="jinpei-icon-btn" style="flex-shrink: 0;" title="${isCollapsed ? '展开面板' : '折叠面板'}">${isCollapsed ? '＋' : '−'}</button>
                 </div>
             </div>
@@ -1136,49 +1197,139 @@
             }
         }
 
-        // 折叠 / 展开交互
-        minBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            isCollapsed = !isCollapsed;
+        const topBarEl = getHUDElement('jinpei-hud-top-bar');
+        const headerLeft = getHUDElement('jinpei-hud-header-left');
+        const headerRight = getHUDElement('jinpei-hud-header-right');
+        const iconEl = getHUDElement('jinpei-hud-icon');
+        const titleTextEl = getHUDElement('jinpei-hud-title-text');
+
+        function setCollapsed(collapsed) {
+            isCollapsed = !!collapsed;
             setStorageItem(STORAGE_KEYS.hudCollapsed, isCollapsed ? 'true' : 'false');
 
+            if (hud.classList) {
+                if (isCollapsed) hud.classList.add('jinpei-collapsed');
+                else hud.classList.remove('jinpei-collapsed');
+            }
+
             if (isCollapsed) {
-                bodyEl.style.display = 'none';
-                minBtn.innerText = '＋';
-                minBtn.title = '展开面板';
-                hud.style.width = 'auto';
-                hud.style.minWidth = '210px';
-                header.style.borderBottom = 'none';
+                hud.style.width = '42px';
+                hud.style.height = '42px';
+                hud.style.minWidth = '42px';
+                hud.style.borderRadius = '50%';
+                if (bodyEl) bodyEl.style.display = 'none';
+                if (topBarEl) topBarEl.style.display = 'none';
+                if (titleTextEl) titleTextEl.style.display = 'none';
                 if (versionEl) versionEl.style.display = 'none';
-                if (miniStatusEl) miniStatusEl.style.display = 'inline-block';
-            } else {
-                bodyEl.style.display = 'block';
-                minBtn.innerText = '−';
-                minBtn.title = '折叠面板';
-                hud.style.width = '320px';
-                hud.style.minWidth = '320px';
-                header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.06)';
-                if (versionEl) versionEl.style.display = 'inline-block';
+                if (headerRight) headerRight.style.display = 'none';
                 if (miniStatusEl) miniStatusEl.style.display = 'none';
+                if (header) {
+                    header.style.width = '42px';
+                    header.style.height = '42px';
+                    header.style.padding = '0';
+                    header.style.justifyContent = 'center';
+                    header.style.borderBottom = 'none';
+                    const statusSummary = state.enabled ? (state.videoProgress || state.statusText || '运行中') : '已暂停';
+                    header.title = `🐚 神奇海螺 · ${statusSummary} (点击展开)`;
+                }
+                if (headerLeft) {
+                    headerLeft.style.width = '100%';
+                    headerLeft.style.height = '100%';
+                    headerLeft.style.justifyContent = 'center';
+                    headerLeft.style.gap = '0';
+                }
+                if (iconEl) {
+                    iconEl.style.fontSize = '21px';
+                }
+                if (dot) {
+                    dot.style.position = 'absolute';
+                    dot.style.top = '5px';
+                    dot.style.right = '5px';
+                    dot.style.width = '7px';
+                    dot.style.height = '7px';
+                }
+                if (minBtn) {
+                    minBtn.innerText = '＋';
+                    minBtn.title = '展开面板';
+                }
+            } else {
+                hud.style.width = '320px';
+                hud.style.height = 'auto';
+                hud.style.minWidth = '320px';
+                hud.style.borderRadius = '18px';
+                if (bodyEl) bodyEl.style.display = 'block';
+                if (topBarEl) topBarEl.style.display = 'block';
+                if (titleTextEl) titleTextEl.style.display = 'inline';
+                if (versionEl) versionEl.style.display = 'inline-block';
+                if (headerRight) headerRight.style.display = 'flex';
+                if (miniStatusEl) miniStatusEl.style.display = 'none';
+                if (header) {
+                    header.style.width = 'auto';
+                    header.style.height = 'auto';
+                    header.style.padding = '10px 14px';
+                    header.style.justifyContent = 'space-between';
+                    header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.06)';
+                    header.title = '';
+                }
+                if (headerLeft) {
+                    headerLeft.style.width = 'auto';
+                    headerLeft.style.height = 'auto';
+                    headerLeft.style.justifyContent = 'flex-start';
+                    headerLeft.style.gap = '7px';
+                }
+                if (iconEl) {
+                    iconEl.style.fontSize = '14px';
+                }
+                if (dot) {
+                    dot.style.position = 'static';
+                    dot.style.width = '8px';
+                    dot.style.height = '8px';
+                }
+                if (minBtn) {
+                    minBtn.innerText = '−';
+                    minBtn.title = '折叠面板';
+                }
             }
             clampHUDPosition();
             setStorageItem(STORAGE_KEYS.hudPos, JSON.stringify({
                 left: hud.style.left,
                 top: hud.style.top
             }));
-        });
+        }
+
+        // 初始化根据已保存状态应用折叠/展开
+        setCollapsed(isCollapsed);
+
+        // 折叠 / 展开交互：点击右上角折叠按钮
+        if (minBtn) {
+            minBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setCollapsed(!isCollapsed);
+            });
+        }
+
+        // 最小化状态下：点击海螺图标/小悬浮球任意位置直接展开（若刚发生拖拽则忽略点击）
+        if (header) {
+            header.addEventListener('click', (e) => {
+                if (isCollapsed && !hasDragged) {
+                    setCollapsed(false);
+                }
+            });
+        }
 
         // 窗口尺寸变化时自动校正 HUD 坐标
         window.addEventListener('resize', clampHUDPosition);
 
         // 自由拖拽交互
         let isDragging = false;
+        let hasDragged = false;
         let startX = 0, startY = 0;
         let initialLeft = 0, initialTop = 0;
 
         header.addEventListener('mousedown', (e) => {
-            if (e.target.closest('button')) return;
+            if (!isCollapsed && e.target.closest('button')) return;
             isDragging = true;
+            hasDragged = false;
             startX = e.clientX;
             startY = e.clientY;
             const rect = hud.getBoundingClientRect();
@@ -1192,6 +1343,9 @@
             if (!isDragging) return;
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
+            if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+                hasDragged = true;
+            }
             let newLeft = initialLeft + dx;
             let newTop = initialTop + dy;
 
@@ -1209,11 +1363,14 @@
             if (isDragging) {
                 isDragging = false;
                 clampHUDPosition();
-                hud.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease';
+                hud.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease';
                 setStorageItem(STORAGE_KEYS.hudPos, JSON.stringify({
                     left: hud.style.left,
                     top: hud.style.top
                 }));
+                setTimeout(() => {
+                    hasDragged = false;
+                }, 50);
             }
         });
 
@@ -1431,6 +1588,15 @@
             } else {
                 miniStatusEl.innerText = '已暂停';
             }
+        }
+
+        const hudEl = getHUDElement('jinpei-hud');
+        const headerEl = getHUDElement('jinpei-hud-header');
+        const isCollapsedNow = (hudEl && hudEl.classList && hudEl.classList.contains('jinpei-collapsed')) ||
+            getStorageItem(STORAGE_KEYS.hudCollapsed, 'jinpei_hud_collapsed') === 'true';
+        if (isCollapsedNow && headerEl) {
+            const statusSummary = state.enabled ? (state.videoProgress || state.statusText || '运行中') : '已暂停';
+            headerEl.title = `🐚 神奇海螺 · ${statusSummary} (点击展开)`;
         }
     }
 
@@ -3245,7 +3411,7 @@
         }
     }
 
-    recordDiagnostic('INFO', '脚本初始化 v1.6.3，运行状态：' + (state.enabled ? '已启动' : '待启动'));
+    recordDiagnostic('INFO', '脚本初始化 v1.6.4，运行状态：' + (state.enabled ? '已启动' : '待启动'));
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
         window.addEventListener('beforeunload', () => {
             if (!state.enabled || !CONFIG.debugPlayback) return;

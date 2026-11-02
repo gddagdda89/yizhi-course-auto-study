@@ -1713,3 +1713,94 @@ test('[并发 5] 并发子窗口学完全部课程后自动关闭释放资源', 
 
     assert.equal(t.context.window.closed, true, '并发子窗口学完全部课程后应调用 window.close() 自动关闭');
 });
+
+function renderHUDTest(storageInit = []) {
+    const t = setup(storageInit, storageInit);
+    let attachedShadowRoot = null;
+    const hostEl = {
+        id: '_kme_tool_host',
+        style: {},
+        attachShadow(init) {
+            assert.equal(init.mode, 'open');
+            attachedShadowRoot = {
+                children: [],
+                appendChild(child) { this.children.push(child); },
+                getElementById(id) { return this.children.find(c => c.id === id) || null; },
+                querySelector() { return null; }
+            };
+            return attachedShadowRoot;
+        }
+    };
+    t.context.document.body = {
+        children: [],
+        appendChild(child) { this.children.push(child); }
+    };
+    t.context.document.getElementById = (id) => {
+        if (id === '_kme_tool_host') return null;
+        if (id === 'jinpei-hud') return null;
+        return { style: {}, innerText: '', addEventListener() {}, appendChild() {} };
+    };
+    t.context.document.createElement = (tag) => {
+        if (tag === 'div') {
+            return {
+                id: '',
+                style: {},
+                children: [],
+                classList: {
+                    classes: new Set(),
+                    add(c) { this.classes.add(c); },
+                    remove(c) { this.classes.delete(c); },
+                    contains(c) { return this.classes.has(c); },
+                    toggle(c, v) { if (v) this.add(c); else this.remove(c); }
+                },
+                attachShadow: hostEl.attachShadow,
+                appendChild(c) { this.children.push(c); },
+                addEventListener() {},
+                getBoundingClientRect() { return { left: 0, top: 0, width: 320, height: 200 }; }
+            };
+        }
+        if (tag === 'style') {
+            return { id: '', innerHTML: '' };
+        }
+        return { style: {}, addEventListener() {} };
+    };
+    return { t, getShadowRoot: () => attachedShadowRoot };
+}
+
+test('[HUD 最小化 1] 最小化时折叠为单个海螺图标悬浮球，隐藏标题文字、版本号及迷你状态', async () => {
+    const { t, getShadowRoot } = renderHUDTest([['_kme_pref_col', 'true']]);
+    await t.mainLoop();
+
+    const shadow = getShadowRoot();
+    assert.ok(shadow, '应该为 HUD 创建 Shadow DOM');
+    const hud = shadow.children.find(c => c.id === 'jinpei-hud');
+    assert.ok(hud, 'HUD 面板应挂载在 Shadow DOM 中');
+
+    assert.equal(hud.style.width, '42px', '折叠时 HUD 宽度应为 42px 紧凑正圆');
+    assert.equal(hud.style.height, '42px', '折叠时 HUD 高度应为 42px');
+    assert.equal(hud.style.borderRadius, '50%', '折叠时 HUD 边框应为 50% 正圆');
+    assert.ok(hud.classList.contains('jinpei-collapsed'), '折叠时应具有 jinpei-collapsed 样式类名');
+
+    // 检查 HTML 结构：标题文字在折叠时为 display: none，不展示 title
+    assert.match(hud.innerHTML, /id="jinpei-hud-title-text"[^>]*display:\s*none/, '折叠时标题文字（神奇海螺）应隐藏不展示');
+    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*display:\s*none/, '折叠时版本号应隐藏');
+    assert.match(hud.innerHTML, /id="jinpei-hud-top-bar"[^>]*display:\s*none/, '折叠时顶部彩条应隐藏');
+    assert.match(hud.innerHTML, /id="jinpei-hud-icon"[^>]*>🐚<\/span>/, '折叠时应展示海螺图标');
+});
+
+test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.6.4', async () => {
+    const { t, getShadowRoot } = renderHUDTest([['_kme_pref_col', 'false']]);
+    await t.mainLoop();
+
+    const shadow = getShadowRoot();
+    const hud = shadow.children.find(c => c.id === 'jinpei-hud');
+    assert.ok(hud);
+
+    assert.equal(hud.style.width, '320px', '展开时宽度应为 320px');
+    assert.equal(hud.style.borderRadius, '18px', '展开时圆角应为 18px');
+    assert.equal(hud.classList.contains('jinpei-collapsed'), false);
+
+    assert.match(hud.innerHTML, /id="jinpei-hud-title-text"[^>]*display:\s*inline;?[^>]*>神奇海螺<\/span>/, '展开时标题文字应正常展示');
+    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*>v1\.6\.4<\/span>/, '展开时版本号应显示为 v1.6.4');
+    assert.match(hud.innerHTML, /id="jinpei-hud-top-bar"[^>]*display:\s*block/, '展开时顶部彩条应正常显示');
+});
