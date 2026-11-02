@@ -28,6 +28,7 @@
         const hud = document.createElement('div');
         hud.id = 'jinpei-hud';
         hud.className = 'jinpei-glass';
+        hud.style.transition = 'transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
 
         // 恢复拖动位置（脱敏键名）
         let savedPos = null;
@@ -86,7 +87,7 @@
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.0</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.1</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -189,40 +190,52 @@
                             <span>🚀</span> 并发课程
                         </span>
                         <div style="display: flex; align-items: center; gap: 5px;">
-                            <button id="jinpei-concurrency-dec" title="减少并发课程" style="width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.85); color: #334155; font-size: 13px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">−</button>
+                            <button id="jinpei-concurrency-dec" class="jinpei-step-btn" title="减少并发课程">−</button>
                             <span id="jinpei-concurrency-val" style="font-size: 13px; font-weight: 700; color: #0284c7; min-width: 16px; text-align: center; font-family: ui-monospace, monospace;">${state.concurrency}</span>
-                            <button id="jinpei-concurrency-inc" title="增加并发课程 (最高 6 路)" style="width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.85); color: #334155; font-size: 13px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">＋</button>
+                            <button id="jinpei-concurrency-inc" class="jinpei-step-btn" title="增加并发课程 (最高 6 路)">＋</button>
                             <span id="jinpei-active-tabs-badge" style="font-size: 10px; color: #059669; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 4px; padding: 1px 5px; font-weight: 600; white-space: nowrap;" title="当前活跃标签页 / 目标并发数">1/1</span>
                         </div>
                     </div>
                 </div>
 
-                <!-- 底部提示 -->
+                <!-- 底部任务选择与辅助工具 -->
                 <details id="jinpei-task-selection" style="display: none; margin-top: 8px; font-size: 11px; color: #64748b;">
-                    <summary style="cursor: pointer;">选择学习任务</summary>
-                    <div id="jinpei-task-list" style="max-height: 150px; overflow-y: auto; padding: 6px 0;"></div>
-                    <button id="jinpei-task-all" type="button">全选</button>
-                    <button id="jinpei-task-clear" type="button">清空</button>
-                    <button id="jinpei-task-refresh" type="button">刷新任务</button>
-                    <span>暂停时可修改</span>
+                    <summary class="jinpei-summary">
+                        <span>📋 选择学习任务</span>
+                        <span class="jinpei-summary-arrow">›</span>
+                    </summary>
+                    <div class="jinpei-details-body">
+                        <div id="jinpei-task-list" style="max-height: 140px; overflow-y: auto; padding: 2px 0;"></div>
+                        <div style="display: flex; gap: 5px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+                            <button id="jinpei-task-all" type="button" class="jinpei-btn-sub">全选</button>
+                            <button id="jinpei-task-clear" type="button" class="jinpei-btn-sub jinpei-btn-danger">清空</button>
+                            <button id="jinpei-task-refresh" type="button" class="jinpei-btn-sub jinpei-btn-primary">刷新任务</button>
+                            <span style="font-size: 10px; color: #94a3b8; margin-left: auto;">暂停时可修改</span>
+                        </div>
+                    </div>
                 </details>
-                <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309;">
+                <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; padding: 4px 8px;">
                     <span id="jinpei-outcome-summary"></span>
-                    <button id="jinpei-retry-skipped" type="button" style="border: 0; background: transparent; color: #64748b; font-size: 10px; cursor: pointer; padding: 2px;">重试异常</button>
+                    <button id="jinpei-retry-skipped" type="button" class="jinpei-btn-sub" style="font-size: 10px; padding: 1px 6px; color: #b45309; border-color: rgba(245, 158, 11, 0.3);">重试异常</button>
                 </div>
                 <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94a3b8; padding: 0 2px;">
                     <span>按住顶部可拖动</span>
-                    <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; text-decoration: underline;" title="在后台多开一个课程页面">多开 1 窗口</span>
+                    <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; padding: 1px 5px; border-radius: 4px; background: rgba(2, 132, 199, 0.08); font-weight: 500; transition: all 0.15s ease;" title="在后台多开一个课程页面">多开 1 窗口</span>
                     <span>1.0x 标准播放</span>
                 </div>
                 <details id="jinpei-diagnostics" style="margin-top: 6px; font-size: 10px; color: #94a3b8; white-space: normal;">
-                    <summary style="cursor: pointer; width: fit-content; padding: 3px 2px;">诊断日志</summary>
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 5px 0;">
-                        <button id="jinpei-diagnostics-copy" type="button" class="jinpei-icon-btn" style="width: auto; padding: 0 6px; font-size: 10px;">复制日志</button>
-                        <button id="jinpei-diagnostics-clear" type="button" class="jinpei-icon-btn" style="width: auto; padding: 0 6px; font-size: 10px;">清空</button>
-                        <span id="jinpei-diagnostics-notice" role="status"></span>
+                    <summary class="jinpei-summary">
+                        <span>🔍 诊断日志</span>
+                        <span class="jinpei-summary-arrow">›</span>
+                    </summary>
+                    <div class="jinpei-details-body">
+                        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                            <button id="jinpei-diagnostics-copy" type="button" class="jinpei-btn-sub" style="font-size: 10px; padding: 2px 7px;">复制日志</button>
+                            <button id="jinpei-diagnostics-clear" type="button" class="jinpei-btn-sub jinpei-btn-danger" style="font-size: 10px; padding: 2px 7px;">清空</button>
+                            <span id="jinpei-diagnostics-notice" role="status" style="font-size: 10px; color: #059669; margin-left: auto;"></span>
+                        </div>
+                        <textarea id="jinpei-diagnostics-output" class="jinpei-textarea" readonly aria-label="最近诊断日志"></textarea>
                     </div>
-                    <textarea id="jinpei-diagnostics-output" readonly aria-label="最近诊断日志" style="width: 100%; height: 140px; resize: vertical; border: 1px solid rgba(0,0,0,0.08); border-radius: 6px; padding: 6px; background: rgba(255,255,255,0.25); color: #475569; font: 10px/1.5 ui-monospace, monospace; user-select: text;"></textarea>
                 </details>
             </div>
         `;
@@ -291,6 +304,11 @@
             }
 
             if (isCollapsed) {
+                const currentH = hud.offsetHeight || 0;
+                if (currentH > 42) {
+                    hud.style.height = `${currentH}px`;
+                    if (typeof hud.offsetHeight === 'number') void hud.offsetHeight;
+                }
                 hud.style.width = '42px';
                 hud.style.height = '42px';
                 hud.style.minWidth = '42px';
@@ -338,11 +356,6 @@
                     minBtn.title = '展开面板';
                 }
             } else {
-                hud.style.width = '320px';
-                hud.style.height = 'auto';
-                hud.style.minWidth = '320px';
-                hud.style.borderRadius = '18px';
-                hud.style.overflow = 'hidden';
                 if (bodyEl) bodyEl.style.display = 'block';
                 if (topBarEl) topBarEl.style.display = 'block';
                 if (titleTextEl) titleTextEl.style.display = 'inline';
@@ -352,6 +365,27 @@
                 if (updateBadgeEl) updateBadgeEl.style.display = hasUpdate ? 'inline-block' : 'none';
                 if (headerRight) headerRight.style.display = 'flex';
                 if (miniStatusEl) miniStatusEl.style.display = 'none';
+
+                const prevH = hud.offsetHeight || 0;
+                hud.style.width = '320px';
+                hud.style.minWidth = '320px';
+                hud.style.borderRadius = '18px';
+                hud.style.overflow = 'hidden';
+
+                if (prevH <= 42 && typeof hud.offsetHeight === 'number') {
+                    hud.style.height = 'auto';
+                    const targetH = hud.offsetHeight || 0;
+                    if (targetH > 42) {
+                        hud.style.height = '42px';
+                        void hud.offsetHeight;
+                        hud.style.height = `${targetH}px`;
+                        setTimeout(() => {
+                            if (!isCollapsed) hud.style.height = 'auto';
+                        }, 280);
+                    }
+                } else {
+                    hud.style.height = 'auto';
+                }
                 if (header) {
                     header.style.width = 'auto';
                     header.style.height = 'auto';
@@ -454,7 +488,7 @@
             if (isDragging) {
                 isDragging = false;
                 clampHUDPosition();
-                hud.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease';
+                hud.style.transition = 'transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
                 setStorageItem(STORAGE_KEYS.hudPos, JSON.stringify({
                     left: hud.style.left,
                     top: hud.style.top

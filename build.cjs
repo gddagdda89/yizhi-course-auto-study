@@ -1,12 +1,76 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const pkgPath = path.join(__dirname, 'package.json');
 const srcDir = path.join(__dirname, 'src');
 const outputFile = path.join(__dirname, 'pc.js');
 
-function build() {
+function getPackageVersion() {
+    if (fs.existsSync(pkgPath)) {
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            if (pkg.version) return pkg.version;
+        } catch (_) {}
+    }
+    return null;
+}
+
+function syncVersion(version) {
+    if (!version || !fs.existsSync(srcDir)) return;
+
+    // 1. 同步 package.json
+    if (fs.existsSync(pkgPath)) {
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            if (pkg.version !== version) {
+                pkg.version = version;
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+            }
+        } catch (_) {}
+    }
+
+    // 2. 同步 01-header.js
+    const headerPath = path.join(srcDir, '01-header.js');
+    if (fs.existsSync(headerPath)) {
+        let content = fs.readFileSync(headerPath, 'utf8');
+        content = content.replace(/(^\/\/\s*@version\s+)\S+/m, `$1${version}`);
+        fs.writeFileSync(headerPath, content, 'utf8');
+    }
+
+    // 3. 同步 02-config.js
+    const configPath = path.join(srcDir, '02-config.js');
+    if (fs.existsSync(configPath)) {
+        let content = fs.readFileSync(configPath, 'utf8');
+        content = content.replace(/(const\s+SCRIPT_VERSION\s*=\s*')[^']+(';)/, `$1${version}$2`);
+        content = content.replace(/(【神奇海螺\s*v)[^】]+(】)/, `$1${version}$2`);
+        fs.writeFileSync(configPath, content, 'utf8');
+    }
+
+    // 4. 同步 11-hud.js
+    const hudPath = path.join(srcDir, '11-hud.js');
+    if (fs.existsSync(hudPath)) {
+        let content = fs.readFileSync(hudPath, 'utf8');
+        content = content.replace(/(id="jinpei-hud-version"[^>]*>v)[^<]+(<\/span>)/, `$1${version}$2`);
+        fs.writeFileSync(hudPath, content, 'utf8');
+    }
+
+    // 5. 同步 18-main.js
+    const mainPath = path.join(srcDir, '18-main.js');
+    if (fs.existsSync(mainPath)) {
+        let content = fs.readFileSync(mainPath, 'utf8');
+        content = content.replace(/(脚本初始化\s+v)[0-9.]+(\s*[，,])/g, `$1${version}$2`);
+        fs.writeFileSync(mainPath, content, 'utf8');
+    }
+}
+
+function build(options = {}) {
     if (!fs.existsSync(srcDir)) {
         throw new Error(`Source directory not found: ${srcDir}`);
+    }
+
+    const version = options.version || getPackageVersion();
+    if (version && !options.checkOnly) {
+        syncVersion(version);
     }
 
     const headerPath = path.join(srcDir, '01-header.js');
@@ -32,7 +96,14 @@ function build() {
 
 if (require.main === module) {
     const isCheck = process.argv.includes('--check');
-    const content = build();
+    const versionArg = process.argv.find(a => /^\d+\.\d+\.\d+$/.test(a) || a.startsWith('--set-version='));
+    const explicitVersion = versionArg ? versionArg.replace('--set-version=', '') : null;
+
+    if (explicitVersion) {
+        syncVersion(explicitVersion);
+    }
+
+    const content = build({ checkOnly: isCheck });
 
     if (isCheck) {
         if (!fs.existsSync(outputFile)) {
@@ -47,8 +118,9 @@ if (require.main === module) {
         console.log('Build check passed: pc.js matches src/ modules.');
     } else {
         fs.writeFileSync(outputFile, content, 'utf8');
-        console.log(`Successfully built ${outputFile} from ${srcDir} (${fs.readdirSync(srcDir).length} modules).`);
+        const ver = explicitVersion || getPackageVersion() || 'unknown';
+        console.log(`Successfully built ${outputFile} (v${ver}) from ${srcDir} (${fs.readdirSync(srcDir).length} modules).`);
     }
 }
 
-module.exports = { build };
+module.exports = { build, syncVersion, getPackageVersion };

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.7.0
+// @version      1.7.1
 // @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
 // @author       gddagdda89
 // @license      MIT
@@ -17,9 +17,9 @@
 (function () {
     'use strict';
 
-const SCRIPT_VERSION = '1.7.0';
+const SCRIPT_VERSION = '1.7.1';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.0】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.1】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -902,7 +902,7 @@ function getStorageItem(keyName, legacyKey) {
                 user-select: none;
                 overflow: hidden;
                 white-space: nowrap !important;
-                transition: box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease;
+                transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
             }
             .jinpei-glass:hover {
                 background: rgba(255, 255, 255, 0.58) !important;
@@ -915,11 +915,10 @@ function getStorageItem(keyName, legacyKey) {
                 width: 42px !important;
                 height: 42px !important;
                 min-width: 42px !important;
-                max-width: 42px !important;
                 cursor: pointer !important;
                 overflow: visible !important;
                 box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(255, 255, 255, 0.75) inset !important;
-                transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease !important;
+                transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
             }
             .jinpei-glass.jinpei-collapsed:hover {
                 transform: scale(1.08);
@@ -943,6 +942,15 @@ function getStorageItem(keyName, legacyKey) {
                 border-bottom: none !important;
                 position: relative !important;
                 cursor: pointer !important;
+            }
+            #jinpei-hud-header {
+                transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.25s ease !important;
+            }
+            #jinpei-hud-icon {
+                transition: font-size 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            }
+            #jinpei-hud-dot {
+                transition: top 0.25s ease, right 0.25s ease, width 0.25s ease, height 0.25s ease, box-shadow 0.25s ease !important;
             }
             .jinpei-glass.jinpei-collapsed #jinpei-hud-header-left {
                 width: 100% !important;
@@ -1014,6 +1022,245 @@ function getStorageItem(keyName, legacyKey) {
                 background: rgba(0, 0, 0, 0.08);
                 color: #0f172a;
                 border-color: rgba(0, 0, 0, 0.12);
+            }
+            /* 次级与工具按钮（全选、清空、刷新任务、复制/清空日志等） */
+            .jinpei-btn-sub {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 4px;
+                padding: 3px 8px;
+                font-size: 11px;
+                font-weight: 500;
+                color: #334155;
+                background: rgba(255, 255, 255, 0.65);
+                border: 1px solid rgba(0, 0, 0, 0.09);
+                border-radius: 6px;
+                cursor: pointer;
+                outline: none;
+                line-height: 1.4;
+                transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+                backdrop-filter: blur(4px);
+                -webkit-backdrop-filter: blur(4px);
+                box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+                user-select: none;
+            }
+            .jinpei-btn-sub:hover:not(:disabled) {
+                background: #ffffff;
+                color: #0284c7;
+                border-color: rgba(2, 132, 199, 0.35);
+                box-shadow: 0 2px 6px rgba(2, 132, 199, 0.18);
+                transform: translateY(-1px);
+            }
+            .jinpei-btn-sub:active:not(:disabled) {
+                transform: translateY(0);
+                filter: brightness(0.96);
+            }
+            .jinpei-btn-sub:disabled {
+                opacity: 0.45;
+                cursor: not-allowed;
+                border-color: rgba(0, 0, 0, 0.05);
+                background: rgba(0, 0, 0, 0.02);
+                color: #94a3b8;
+                transform: none !important;
+                box-shadow: none !important;
+            }
+            .jinpei-btn-sub.jinpei-btn-primary {
+                color: #0284c7;
+                background: rgba(2, 132, 199, 0.08);
+                border-color: rgba(2, 132, 199, 0.25);
+                font-weight: 600;
+            }
+            .jinpei-btn-sub.jinpei-btn-primary:hover:not(:disabled) {
+                background: #0284c7;
+                color: #ffffff;
+                border-color: #0284c7;
+                box-shadow: 0 2px 8px rgba(2, 132, 199, 0.3);
+            }
+            .jinpei-btn-sub.jinpei-btn-danger:hover:not(:disabled) {
+                color: #ef4444;
+                border-color: rgba(239, 68, 68, 0.3);
+                background: rgba(254, 242, 242, 0.9);
+                box-shadow: 0 2px 6px rgba(239, 68, 68, 0.18);
+            }
+            /* 折叠详情栏与指示箭头 */
+            .jinpei-summary {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                cursor: pointer;
+                font-size: 11px;
+                font-weight: 600;
+                color: #475569;
+                padding: 6px 9px;
+                background: rgba(255, 255, 255, 0.4);
+                border: 1px solid rgba(255, 255, 255, 0.65);
+                border-radius: 8px;
+                transition: all 0.2s ease;
+                user-select: none;
+                list-style: none;
+            }
+            .jinpei-summary::-webkit-details-marker {
+                display: none;
+            }
+            .jinpei-summary:hover {
+                background: rgba(255, 255, 255, 0.7);
+                color: #0f172a;
+                border-color: rgba(255, 255, 255, 0.9);
+            }
+            .jinpei-summary-arrow {
+                font-size: 11px;
+                line-height: 1;
+                color: #94a3b8;
+                transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s ease;
+                display: inline-block;
+            }
+            details[open] > .jinpei-summary .jinpei-summary-arrow {
+                transform: rotate(90deg);
+                color: #0284c7;
+            }
+            details[open] > .jinpei-summary {
+                border-bottom-left-radius: 0;
+                border-bottom-right-radius: 0;
+                background: rgba(255, 255, 255, 0.6);
+                border-bottom-color: rgba(0, 0, 0, 0.04);
+            }
+            .jinpei-details-body {
+                background: rgba(255, 255, 255, 0.26);
+                border: 1px solid rgba(255, 255, 255, 0.65);
+                border-top: none;
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
+                padding: 8px 10px;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02) inset;
+            }
+            /* 自定义现代复选框与任务选项 */
+            .jinpei-checkbox {
+                appearance: none;
+                -webkit-appearance: none;
+                width: 14px;
+                height: 14px;
+                border: 1.5px solid #cbd5e1;
+                border-radius: 4px;
+                outline: none;
+                cursor: pointer;
+                margin: 0;
+                vertical-align: middle;
+                background: rgba(255, 255, 255, 0.85);
+                display: inline-grid;
+                place-content: center;
+                transition: all 0.18s ease;
+                flex-shrink: 0;
+            }
+            .jinpei-checkbox::before {
+                content: "";
+                width: 8px;
+                height: 8px;
+                clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+                transform: scale(0);
+                transform-origin: center;
+                transition: 120ms transform ease-in-out;
+                background-color: #ffffff;
+            }
+            .jinpei-checkbox:checked {
+                background-color: #0284c7;
+                border-color: #0284c7;
+                box-shadow: 0 1px 3px rgba(2, 132, 199, 0.3);
+            }
+            .jinpei-checkbox:checked::before {
+                transform: scale(1);
+            }
+            .jinpei-checkbox:hover:not(:disabled) {
+                border-color: #0284c7;
+                background-color: #f0f9ff;
+            }
+            .jinpei-checkbox:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+                border-color: #e2e8f0;
+                background-color: rgba(0, 0, 0, 0.04);
+            }
+            .jinpei-task-item {
+                display: flex;
+                align-items: center;
+                gap: 7px;
+                padding: 4px 6px;
+                border-radius: 6px;
+                margin: 2px 0;
+                cursor: pointer;
+                font-size: 11px;
+                color: #334155;
+                line-height: 1.35;
+                transition: background 0.15s ease;
+            }
+            .jinpei-task-item:hover {
+                background: rgba(255, 255, 255, 0.55);
+            }
+            /* 并发加减步进器按钮 */
+            .jinpei-step-btn {
+                width: 20px;
+                height: 20px;
+                border-radius: 5px;
+                border: 1px solid rgba(0, 0, 0, 0.1);
+                background: rgba(255, 255, 255, 0.85);
+                color: #334155;
+                font-size: 12px;
+                font-weight: bold;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                line-height: 1;
+                padding: 0;
+                box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+                transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+                outline: none;
+            }
+            .jinpei-step-btn:hover {
+                background: #0284c7;
+                color: #ffffff;
+                border-color: #0284c7;
+                box-shadow: 0 2px 6px rgba(2, 132, 199, 0.25);
+                transform: translateY(-1px);
+            }
+            .jinpei-step-btn:active {
+                transform: translateY(0) scale(0.95);
+                filter: brightness(0.95);
+            }
+            /* 诊断日志文本域 */
+            .jinpei-textarea {
+                width: 100%;
+                height: 130px;
+                resize: vertical;
+                border: 1px solid rgba(0, 0, 0, 0.08);
+                border-radius: 8px;
+                padding: 7px 8px;
+                background: rgba(255, 255, 255, 0.55);
+                color: #334155;
+                font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                user-select: text;
+                outline: none;
+                transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+            }
+            .jinpei-textarea:focus {
+                border-color: #38bdf8;
+                box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+                background: rgba(255, 255, 255, 0.85);
+            }
+            /* 精致纤细滚动条 */
+            .jinpei-glass ::-webkit-scrollbar {
+                width: 5px;
+                height: 5px;
+            }
+            .jinpei-glass ::-webkit-scrollbar-track {
+                background: transparent;
+            }
+            .jinpei-glass ::-webkit-scrollbar-thumb {
+                background: rgba(0, 0, 0, 0.12);
+                border-radius: 9999px;
+            }
+            .jinpei-glass ::-webkit-scrollbar-thumb:hover {
+                background: rgba(0, 0, 0, 0.22);
             }
         `;
         root.appendChild(style);
@@ -1115,6 +1362,7 @@ function createHUD() {
         const hud = document.createElement('div');
         hud.id = 'jinpei-hud';
         hud.className = 'jinpei-glass';
+        hud.style.transition = 'transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
 
         // 恢复拖动位置（脱敏键名）
         let savedPos = null;
@@ -1173,7 +1421,7 @@ function createHUD() {
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.0</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.1</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -1276,40 +1524,52 @@ function createHUD() {
                             <span>🚀</span> 并发课程
                         </span>
                         <div style="display: flex; align-items: center; gap: 5px;">
-                            <button id="jinpei-concurrency-dec" title="减少并发课程" style="width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.85); color: #334155; font-size: 13px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">−</button>
+                            <button id="jinpei-concurrency-dec" class="jinpei-step-btn" title="减少并发课程">−</button>
                             <span id="jinpei-concurrency-val" style="font-size: 13px; font-weight: 700; color: #0284c7; min-width: 16px; text-align: center; font-family: ui-monospace, monospace;">${state.concurrency}</span>
-                            <button id="jinpei-concurrency-inc" title="增加并发课程 (最高 6 路)" style="width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.85); color: #334155; font-size: 13px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">＋</button>
+                            <button id="jinpei-concurrency-inc" class="jinpei-step-btn" title="增加并发课程 (最高 6 路)">＋</button>
                             <span id="jinpei-active-tabs-badge" style="font-size: 10px; color: #059669; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 4px; padding: 1px 5px; font-weight: 600; white-space: nowrap;" title="当前活跃标签页 / 目标并发数">1/1</span>
                         </div>
                     </div>
                 </div>
 
-                <!-- 底部提示 -->
+                <!-- 底部任务选择与辅助工具 -->
                 <details id="jinpei-task-selection" style="display: none; margin-top: 8px; font-size: 11px; color: #64748b;">
-                    <summary style="cursor: pointer;">选择学习任务</summary>
-                    <div id="jinpei-task-list" style="max-height: 150px; overflow-y: auto; padding: 6px 0;"></div>
-                    <button id="jinpei-task-all" type="button">全选</button>
-                    <button id="jinpei-task-clear" type="button">清空</button>
-                    <button id="jinpei-task-refresh" type="button">刷新任务</button>
-                    <span>暂停时可修改</span>
+                    <summary class="jinpei-summary">
+                        <span>📋 选择学习任务</span>
+                        <span class="jinpei-summary-arrow">›</span>
+                    </summary>
+                    <div class="jinpei-details-body">
+                        <div id="jinpei-task-list" style="max-height: 140px; overflow-y: auto; padding: 2px 0;"></div>
+                        <div style="display: flex; gap: 5px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+                            <button id="jinpei-task-all" type="button" class="jinpei-btn-sub">全选</button>
+                            <button id="jinpei-task-clear" type="button" class="jinpei-btn-sub jinpei-btn-danger">清空</button>
+                            <button id="jinpei-task-refresh" type="button" class="jinpei-btn-sub jinpei-btn-primary">刷新任务</button>
+                            <span style="font-size: 10px; color: #94a3b8; margin-left: auto;">暂停时可修改</span>
+                        </div>
+                    </div>
                 </details>
-                <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309;">
+                <div id="jinpei-outcome-row" style="display: none; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; font-size: 10px; color: #b45309; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; padding: 4px 8px;">
                     <span id="jinpei-outcome-summary"></span>
-                    <button id="jinpei-retry-skipped" type="button" style="border: 0; background: transparent; color: #64748b; font-size: 10px; cursor: pointer; padding: 2px;">重试异常</button>
+                    <button id="jinpei-retry-skipped" type="button" class="jinpei-btn-sub" style="font-size: 10px; padding: 1px 6px; color: #b45309; border-color: rgba(245, 158, 11, 0.3);">重试异常</button>
                 </div>
                 <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94a3b8; padding: 0 2px;">
                     <span>按住顶部可拖动</span>
-                    <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; text-decoration: underline;" title="在后台多开一个课程页面">多开 1 窗口</span>
+                    <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; padding: 1px 5px; border-radius: 4px; background: rgba(2, 132, 199, 0.08); font-weight: 500; transition: all 0.15s ease;" title="在后台多开一个课程页面">多开 1 窗口</span>
                     <span>1.0x 标准播放</span>
                 </div>
                 <details id="jinpei-diagnostics" style="margin-top: 6px; font-size: 10px; color: #94a3b8; white-space: normal;">
-                    <summary style="cursor: pointer; width: fit-content; padding: 3px 2px;">诊断日志</summary>
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 5px 0;">
-                        <button id="jinpei-diagnostics-copy" type="button" class="jinpei-icon-btn" style="width: auto; padding: 0 6px; font-size: 10px;">复制日志</button>
-                        <button id="jinpei-diagnostics-clear" type="button" class="jinpei-icon-btn" style="width: auto; padding: 0 6px; font-size: 10px;">清空</button>
-                        <span id="jinpei-diagnostics-notice" role="status"></span>
+                    <summary class="jinpei-summary">
+                        <span>🔍 诊断日志</span>
+                        <span class="jinpei-summary-arrow">›</span>
+                    </summary>
+                    <div class="jinpei-details-body">
+                        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                            <button id="jinpei-diagnostics-copy" type="button" class="jinpei-btn-sub" style="font-size: 10px; padding: 2px 7px;">复制日志</button>
+                            <button id="jinpei-diagnostics-clear" type="button" class="jinpei-btn-sub jinpei-btn-danger" style="font-size: 10px; padding: 2px 7px;">清空</button>
+                            <span id="jinpei-diagnostics-notice" role="status" style="font-size: 10px; color: #059669; margin-left: auto;"></span>
+                        </div>
+                        <textarea id="jinpei-diagnostics-output" class="jinpei-textarea" readonly aria-label="最近诊断日志"></textarea>
                     </div>
-                    <textarea id="jinpei-diagnostics-output" readonly aria-label="最近诊断日志" style="width: 100%; height: 140px; resize: vertical; border: 1px solid rgba(0,0,0,0.08); border-radius: 6px; padding: 6px; background: rgba(255,255,255,0.25); color: #475569; font: 10px/1.5 ui-monospace, monospace; user-select: text;"></textarea>
                 </details>
             </div>
         `;
@@ -1378,6 +1638,11 @@ function createHUD() {
             }
 
             if (isCollapsed) {
+                const currentH = hud.offsetHeight || 0;
+                if (currentH > 42) {
+                    hud.style.height = `${currentH}px`;
+                    if (typeof hud.offsetHeight === 'number') void hud.offsetHeight;
+                }
                 hud.style.width = '42px';
                 hud.style.height = '42px';
                 hud.style.minWidth = '42px';
@@ -1425,11 +1690,6 @@ function createHUD() {
                     minBtn.title = '展开面板';
                 }
             } else {
-                hud.style.width = '320px';
-                hud.style.height = 'auto';
-                hud.style.minWidth = '320px';
-                hud.style.borderRadius = '18px';
-                hud.style.overflow = 'hidden';
                 if (bodyEl) bodyEl.style.display = 'block';
                 if (topBarEl) topBarEl.style.display = 'block';
                 if (titleTextEl) titleTextEl.style.display = 'inline';
@@ -1439,6 +1699,27 @@ function createHUD() {
                 if (updateBadgeEl) updateBadgeEl.style.display = hasUpdate ? 'inline-block' : 'none';
                 if (headerRight) headerRight.style.display = 'flex';
                 if (miniStatusEl) miniStatusEl.style.display = 'none';
+
+                const prevH = hud.offsetHeight || 0;
+                hud.style.width = '320px';
+                hud.style.minWidth = '320px';
+                hud.style.borderRadius = '18px';
+                hud.style.overflow = 'hidden';
+
+                if (prevH <= 42 && typeof hud.offsetHeight === 'number') {
+                    hud.style.height = 'auto';
+                    const targetH = hud.offsetHeight || 0;
+                    if (targetH > 42) {
+                        hud.style.height = '42px';
+                        void hud.offsetHeight;
+                        hud.style.height = `${targetH}px`;
+                        setTimeout(() => {
+                            if (!isCollapsed) hud.style.height = 'auto';
+                        }, 280);
+                    }
+                } else {
+                    hud.style.height = 'auto';
+                }
                 if (header) {
                     header.style.width = 'auto';
                     header.style.height = 'auto';
@@ -1541,7 +1822,7 @@ function createHUD() {
             if (isDragging) {
                 isDragging = false;
                 clampHUDPosition();
-                hud.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease, width 0.25s ease, height 0.25s ease, border-radius 0.25s ease';
+                hud.style.transition = 'transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease, width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
                 setStorageItem(STORAGE_KEYS.hudPos, JSON.stringify({
                     left: hud.style.left,
                     top: hud.style.top
@@ -2907,9 +3188,11 @@ function getTaskCards() {
         }
         for (const task of tasks) {
             const label = document.createElement('label');
+            label.className = 'jinpei-task-item';
             label.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0;';
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
+            checkbox.className = 'jinpei-checkbox';
             checkbox.checked = isTaskKeySelected(task.key);
             checkbox.disabled = state.enabled;
             const text = document.createElement('span');
@@ -3601,6 +3884,6 @@ function getTaskCards() {
     setTimeout(mainLoop, 1000);
     checkScriptUpdate().catch(() => {});
 
-    recordDiagnostic('INFO', '脚本初始化 v1.7.0，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')');
+    recordDiagnostic('INFO', '脚本初始化 v1.7.1，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')');
 
 })();

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const pkg = require('./package.json');
 
 function createLockManager() {
     const queues = new Map();
@@ -1790,7 +1791,7 @@ test('[HUD 最小化 1] 最小化时折叠为单个海螺图标悬浮球，隐�
     assert.match(hud.innerHTML, /id="jinpei-hud-dot"[^>]*top:\s*7px;?[^>]*right:\s*7px/, '折叠时状态绿点应居内定位避免贴边截断');
 });
 
-test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.7.0', async () => {
+test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.7.1', async () => {
     const { t, getShadowRoot } = renderHUDTest([['_kme_pref_col', 'false']]);
     await t.mainLoop();
 
@@ -1804,7 +1805,7 @@ test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本�
     assert.equal(hud.classList.contains('jinpei-collapsed'), false);
 
     assert.match(hud.innerHTML, /id="jinpei-hud-title-text"[^>]*display:\s*inline;?[^>]*>神奇海螺<\/span>/, '展开时标题文字应正常展示');
-    assert.match(hud.innerHTML, /id="jinpei-hud-version"[^>]*>v1\.7\.0<\/span>/, '展开时版本号应显示为 v1.7.0');
+    assert.match(hud.innerHTML, new RegExp('id="jinpei-hud-version"[^>]*>v' + pkg.version.replace(/\./g, '\\.') + '<\\/span>'), '展开时版本号应显示为 v' + pkg.version);
     assert.match(hud.innerHTML, /id="jinpei-hud-top-bar"[^>]*display:\s*block/, '展开时顶部彩条应正常显示');
 });
 

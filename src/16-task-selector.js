@@ -178,9 +178,11 @@
         }
         for (const task of tasks) {
             const label = document.createElement('label');
+            label.className = 'jinpei-task-item';
             label.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0;';
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
+            checkbox.className = 'jinpei-checkbox';
             checkbox.checked = isTaskKeySelected(task.key);
             checkbox.disabled = state.enabled;
             const text = document.createElement('span');

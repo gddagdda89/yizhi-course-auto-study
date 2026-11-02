@@ -1,6 +1,6 @@
-    const SCRIPT_VERSION = '1.7.0';
+    const SCRIPT_VERSION = '1.7.1';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.0】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.1】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
