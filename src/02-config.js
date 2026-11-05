@@ -1,4 +1,4 @@
-    const SCRIPT_VERSION = '1.8.3';
+    const SCRIPT_VERSION = '1.8.4';
 
     function detectPlatform(url) {
         return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
@@ -7,7 +7,7 @@
     const IS_JNFTC = PLATFORM === 'jnftc';
     const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.3】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.4】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -38,7 +38,7 @@
         defaultConcurrency: 1,        // 默认并发课程数 (1)
         maxConcurrency: 6,            // 最大并发课程数 (6)
         updateCheckInterval: 1800000, // 远程新版本自检周期 (30 分钟)
-        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js',
+        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/magic_conch/refs/heads/main/pc.user.js',
     };
 
     // 会话存储与跨标签存储脱敏键名映射（前缀去标识化，并兼容历史键名读取）

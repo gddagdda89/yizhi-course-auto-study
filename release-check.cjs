@@ -14,7 +14,7 @@ const version = field('version');
 assert.match(version, /^\d+\.\d+\.\d+$/, 'Use a three-part version');
 assert.equal(field('name'), '神奇海螺');
 assert.equal(field('author'), 'gddagdda89');
-const installationUrl = 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js';
+const installationUrl = 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/magic_conch/refs/heads/main/pc.user.js';
 assert.equal(field('updateURL'), installationUrl);
 assert.equal(field('downloadURL'), installationUrl);
 const matches = [...metadata[1].matchAll(/^\/\/ @match\s+(.+)$/gm)].map(match => match[1].trim()).sort();

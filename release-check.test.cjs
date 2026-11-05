@@ -11,7 +11,7 @@ test('发布检查拒绝相同版本或回退版本的新内容', () => {
     assert.throws(() => validateRelease(source, '9999.0.0'), /requires a newer version/);
 });
 test('发布检查拒绝指向其他仓库的安装地址', () => {
-    assert.throws(() => validateRelease(source.replaceAll('/yizhi-course-auto-study/', '/wrong-repository/')));
+    assert.throws(() => validateRelease(source.replaceAll('/magic_conch/', '/wrong-repository/')));
 });
 test('发布检查拒绝 HUD 版本不一致和截断脚本', () => {
     assert.throws(() => validateRelease(source.replace(/>v\d+\.\d+\.\d+<\/span>/, '>v0.0.0</span>')), /HUD version/);

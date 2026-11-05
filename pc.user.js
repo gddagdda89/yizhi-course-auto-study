@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         神奇海螺
-// @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.8.3
+// @namespace    https://github.com/gddagdda89/magic_conch
+// @version      1.8.4
 // @description  易知与江南金培课程学习助手，自动识别平台，支持课程连播与学习状态检查
 // @author       gddagdda89
 // @license      MIT
-// @homepageURL  https://github.com/gddagdda89/yizhi-course-auto-study
-// @supportURL   https://github.com/gddagdda89/yizhi-course-auto-study/issues
-// @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js
-// @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js
+// @homepageURL  https://github.com/gddagdda89/magic_conch
+// @supportURL   https://github.com/gddagdda89/magic_conch/issues
+// @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/magic_conch/refs/heads/main/pc.user.js
+// @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/magic_conch/refs/heads/main/pc.user.js
 // @match        https://pc.kmelearning.com/*
 // @match        https://jnftc.jnbank.com.cn/*
 // @noframes
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-const SCRIPT_VERSION = '1.8.3';
+const SCRIPT_VERSION = '1.8.4';
 
     function detectPlatform(url) {
         return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
@@ -28,7 +28,7 @@ const SCRIPT_VERSION = '1.8.3';
     const IS_JNFTC = PLATFORM === 'jnftc';
     const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.3】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.4】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -59,7 +59,7 @@ const SCRIPT_VERSION = '1.8.3';
         defaultConcurrency: 1,        // 默认并发课程数 (1)
         maxConcurrency: 6,            // 最大并发课程数 (6)
         updateCheckInterval: 1800000, // 远程新版本自检周期 (30 分钟)
-        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js',
+        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/magic_conch/refs/heads/main/pc.user.js',
     };
 
     // 会话存储与跨标签存储脱敏键名映射（前缀去标识化，并兼容历史键名读取）
@@ -1645,7 +1645,7 @@ function createHUD() {
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.3</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.4</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -5019,6 +5019,6 @@ let jnReportPromise = null;
     setTimeout(mainLoop, 1000);
     checkScriptUpdate().catch(() => {});
 
-    recordDiagnostic('INFO', '脚本初始化 v1.8.3，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));
+    recordDiagnostic('INFO', '脚本初始化 v1.8.4，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));
 
 })();

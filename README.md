@@ -1,10 +1,10 @@
 # Magic Conch
 
-A Tampermonkey userscript for Yizhi (`pc.kmelearning.com`) and Jiangnan Financial Training (`jnftc.jnbank.com.cn`). The panel detects the platform automatically.
+A Tampermonkey userscript for course learning assistance. The panel detects the platform automatically.
 
 ## Installation and Usage
 
-Use a current version of Chrome. Create a new script in Tampermonkey, paste the entire contents of `pc.js`, and save. Sign in to the platform, refresh the page, and click the Start button on the floating panel. After updating the script, save and refresh all open course windows.
+Use a current version of Chrome. Create a new script in Tampermonkey, paste the entire contents of `pc.user.js` (or `pc.js`), and save. Sign in to the platform, refresh the page, and click the Start button on the floating panel. After updating the script, save and refresh all open course windows.
 
 Expand the task selector in the panel on any page. All maps are selected by default; pause to change your selection. Use **Refresh tasks** to update the list. Concurrent windows can work across selected maps.
 
