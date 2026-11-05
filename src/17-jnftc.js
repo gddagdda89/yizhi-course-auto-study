@@ -7,6 +7,11 @@
     let jnClockPaused = false;
     let jnContext = {};
     try { jnContext = JSON.parse(getStorageItem(JN_CONTEXT_KEY) || '{}') || {}; } catch (_) {}
+    if (IS_JNFTC) {
+        state.currentTask = jnContext.title || '';
+        state.currentCourse = jnContext.courseTitle || '';
+        state.currentSubVideo = jnContext.queue?.[jnContext.index || 0]?.title || '';
+    }
 
     function jnSave() { setStorageItem(JN_CONTEXT_KEY, JSON.stringify(jnContext)); }
 
@@ -93,7 +98,12 @@
         if (!url) throw new Error('无法识别金培页面地址，请检查页面');
         jnSave();
         state.isActionPending = true;
-        location.href = url;
+        const target = new URL(url);
+        const current = new URL(location.href);
+        target.hash = ''; current.hash = '';
+        // 平台页签使用 #none；同址赋值只会页内跳转，不能用它刷新后台状态。
+        if (target.href === current.href) location.reload();
+        else location.href = target.href;
     }
 
     function jnOpenCourseUrl(link, base = location.href) {
@@ -158,6 +168,7 @@
     }
 
     function pauseJnPlayback() {
+        cancelJnActions();
         for (const doc of jnDocuments()) {
             for (const video of doc.querySelectorAll('video,audio')) { if (!video.paused) video.pause(); }
         }
@@ -205,19 +216,31 @@
         const courseId = new URL(location.href).searchParams.get('CourseId');
         if (jnContext.courseId !== courseId) {
             jnContext.courseId = courseId; jnContext.queue = []; jnContext.index = 0; jnContext.verify = 0;
+            delete jnContext.exam; delete jnContext.examProbeAt;
+            delete jnContext.rating;
         }
         if (jnStatusDone('.a-4')) {
             diagnosticConsole.log('金培：平台已确认课程完成。');
             jnContext.queue = []; jnContext.index = 0; jnContext.verify = 0;
+            delete jnContext.rating;
             jnGo(jnContext.dutyUrl || jnTaskUrl()); return;
         }
         if (jnStatusDone('.a-2')) {
             const examLink = document.querySelector('a[onclick*="CreateExam"]');
             if (examLink && !jnStatusDone('.a-3')) {
-                pauseAutomation('视频已完成，此课程需要手动考试；完成后点击开始继续。'); return;
+                jnStartExam(examLink); return;
             }
-            // 评价由用户确认，避免自动代填评分；平台未完成时不跳过课程。
-            pauseAutomation('视频已完成，请检查课程考试/评价，完成后点击开始继续。'); return;
+            if (!jnStatusDone('.a-3')) {
+                const examTab = Array.from(document.querySelectorAll('#TabNav a')).find(tab => /考试|测验|测试/.test(jnText(tab)));
+                if (examTab && !jnContext.examProbeAt) {
+                    jnContext.examProbeAt = Date.now(); jnSave(); examTab.click(); updateHUD('正在检查课程考试入口...'); return;
+                }
+                if (jnContext.examProbeAt && Date.now() - jnContext.examProbeAt < 3000) return;
+            }
+            if (jnContext.exam && !jnStatusDone('.a-3')) {
+                pauseAutomation('考试已尝试，但平台尚未确认通过，请检查考试结果。'); return;
+            }
+            return jnSubmitRating();
         }
         const batch = jnReadVideos();
         const queue = jnContext.queue || [];
@@ -259,6 +282,15 @@
             jnProgress.suspended = false;
         }
         if (!jnProgress.endedAt && video.ended) jnProgress.endedAt = Date.now();
+        if (CONFIG.jnAutoReport) {
+            if (!Number.isFinite(video.duration) || video.duration <= 0) {
+                if (Date.now() - jnProgress.at > 60000) pauseAutomation('等待课件时长超时，无法自动上报。');
+                else updateHUD('等待课件时长，准备自动上报...');
+                return;
+            }
+            if (Date.now() - jnProgress.at < 3000) { updateHUD('已识别课件，准备提交学习时间...'); return; }
+            return jnReportStudyTime(video);
+        }
         if (jnClockPaused && typeof window.myload === 'function') { window.myload(); jnClockPaused = false; }
         if (jnProgress.endedAt) {
             updateHUD('课件播放结束，等待平台同步记录...');
@@ -288,7 +320,8 @@
 
     async function handleJnPlatform() {
         if (jnBusy) return;
-        if (!jnLoggedIn()) {
+        const onManagedExam = /\/MyExam\//i.test(new URL(location.href).pathname) && !!jnContext.exam;
+        if (!jnLoggedIn() && !onManagedExam) {
             jnLoginWaiting = true;
             updateHUD('江南金培：等待你手动登录，登录后继续。');
             return;
@@ -301,15 +334,15 @@
             const sourceUrl = location.href;
             const generation = claimGeneration;
             const path = new URL(location.href).pathname.toLowerCase();
-            if (path.includes('/myexam/')) { pauseAutomation('请手动完成考试，之后返回课程页面继续。'); return; }
             if (!currentClaim) {
                 const claimed = await tryClaimCourseSlot('controller', '江南金培顺序学习', 'jnftc');
                 if (sourceUrl !== location.href || generation !== claimGeneration) return;
                 if (!state.enabled || !claimed) { if (state.enabled) updateHUD('另一个窗口正在处理金培任务，请在该窗口继续。'); return; }
             }
             registerTabHeartbeat();
-            if (path.endsWith('/onlineread.aspx')) { jnHandlePlayer(); return; }
-            if (path.endsWith('/layer_courseinfo.aspx')) { jnHandleCourse(); return; }
+            if (path.includes('/myexam/')) { jnHandleExam(); return; }
+            if (path.endsWith('/onlineread.aspx')) return await jnHandlePlayer();
+            if (path.endsWith('/layer_courseinfo.aspx')) return await jnHandleCourse();
             if (path.endsWith('/dutyshow.aspx')) { jnHandleDuty(); return; }
             if (!path.endsWith('/mydutylist.aspx')) { jnGo(jnTaskUrl()); return; }
             const tasks = jnReadTasks(document, location.href);

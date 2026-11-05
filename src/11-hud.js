@@ -1,15 +1,18 @@
     function createHUD() {
         if (getHUDElement('jinpei-hud')) return;
 
-        let host = document.getElementById('_kme_tool_host');
-        if (!host && typeof document.createElement === 'function' && document.body) {
-            host = document.createElement('div');
+        const hudDocument = IS_JNFTC ? jnHUDDocument() : document;
+        if (!hudDocument) return;
+
+        let host = hudDocument.getElementById('_kme_tool_host');
+        if (!host && typeof hudDocument.createElement === 'function' && hudDocument.body) {
+            host = hudDocument.createElement('div');
             host.id = '_kme_tool_host';
             host.style.position = 'absolute';
             host.style.top = '0';
             host.style.left = '0';
             host.style.zIndex = '999999';
-            document.body.appendChild(host);
+            hudDocument.body.appendChild(host);
         }
 
         if (host && typeof host.attachShadow === 'function' && !hudShadowRoot) {
@@ -20,7 +23,7 @@
             }
         }
 
-        const renderRoot = hudShadowRoot || document.body;
+        const renderRoot = hudShadowRoot || hudDocument.body;
         if (!renderRoot) return;
 
         ensureHUDStyles(renderRoot);
@@ -87,7 +90,7 @@
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.0</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.1</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -99,6 +102,7 @@
             <!-- 主体内容卡片 -->
             <div id="jinpei-hud-body" style="display: ${isCollapsed ? 'none' : 'block'}; padding: 12px 14px 14px 14px;">
                 <div style="font-size:11px;color:#64748b;margin-bottom:8px;">当前平台：${PLATFORM_NAME}</div>
+                ${IS_JNFTC ? `<div style="font-size:10px;color:#64748b;margin-bottom:8px;">${CONFIG.jnAutoReport ? '自动计时上报' : '正常播放'} · ${CONFIG.jnAutoExam ? '自动考试' : '手动考试'}</div>` : ''}
                 <!-- 快捷启动/暂停按键 -->
                 <button id="jinpei-toggle-btn" class="jinpei-btn-action" style="
                     width: 100%;
@@ -186,7 +190,7 @@
                     </div>
 
                     <!-- 并发课程控制 (1 ~ 6 路) -->
-                    <div style="display: flex; align-items: center; justify-content: space-between; padding-top: 5px; border-top: 1px dashed rgba(0, 0, 0, 0.08); margin-top: 2px;">
+                    <div id="jinpei-concurrency-controls" style="display: ${IS_JNFTC ? 'none' : 'flex'}; align-items: center; justify-content: space-between; padding-top: 5px; border-top: 1px dashed rgba(0, 0, 0, 0.08); margin-top: 2px;">
                         <span style="font-size: 11px; color: #475569; display: flex; align-items: center; gap: 4px; font-weight: 500;">
                             <span>🚀</span> 并发课程
                         </span>
@@ -221,7 +225,7 @@
                 </div>
                 <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #94a3b8; padding: 0 2px;">
                     <span>按住顶部可拖动</span>
-                    <span id="jinpei-open-tab-btn" style="color: #0284c7; cursor: pointer; padding: 1px 5px; border-radius: 4px; background: rgba(2, 132, 199, 0.08); font-weight: 500; transition: all 0.15s ease;" title="在后台多开一个课程页面">多开 1 窗口</span>
+                    <span id="jinpei-open-tab-btn" style="display: ${IS_JNFTC ? 'none' : 'inline'}; color: #0284c7; cursor: pointer; padding: 1px 5px; border-radius: 4px; background: rgba(2, 132, 199, 0.08); font-weight: 500; transition: all 0.15s ease;" title="在后台多开一个课程页面">多开 1 窗口</span>
                     <span>1.0x 标准播放</span>
                 </div>
                 <details id="jinpei-diagnostics" style="margin-top: 6px; font-size: 10px; color: #94a3b8; white-space: normal;">
@@ -465,7 +469,7 @@
             e.preventDefault();
         });
 
-        document.addEventListener('mousemove', (e) => {
+        hudDocument.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
@@ -485,7 +489,7 @@
             hud.style.right = 'auto';
         });
 
-        document.addEventListener('mouseup', () => {
+        hudDocument.addEventListener('mouseup', () => {
             if (isDragging) {
                 isDragging = false;
                 clampHUDPosition();
@@ -544,7 +548,7 @@
             setConcurrencySetting(1);
         }
 
-        if (decBtn && typeof decBtn.addEventListener === 'function') {
+        if (!IS_JNFTC && decBtn && typeof decBtn.addEventListener === 'function') {
             decBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const cur = getConcurrencySetting();
@@ -556,7 +560,7 @@
             });
         }
 
-        if (incBtn && typeof incBtn.addEventListener === 'function') {
+        if (!IS_JNFTC && incBtn && typeof incBtn.addEventListener === 'function') {
             incBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const cur = getConcurrencySetting();
@@ -574,7 +578,7 @@
             });
         }
 
-        if (openTabBtn && typeof openTabBtn.addEventListener === 'function') {
+        if (!IS_JNFTC && openTabBtn && typeof openTabBtn.addEventListener === 'function') {
             openTabBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 try {

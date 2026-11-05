@@ -1,6 +1,7 @@
     // [防检测 4: Shadow DOM 内部元素寻址隔离器]
     let hudShadowRoot = null;
     function getHUDElement(id) {
+        if (hudShadowRoot?.host?.isConnected === false) hudShadowRoot = null;
         if (hudShadowRoot && typeof hudShadowRoot.getElementById === 'function') {
             return hudShadowRoot.getElementById(id) || (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
         }

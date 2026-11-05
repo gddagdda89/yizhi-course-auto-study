@@ -81,7 +81,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { syncAccountContext, readAccountIdentity, detectPlatform, jnRoot, jnUrl, jnReadTasks, jnReadVideos, jnHandleDuty, jnHandleCourse, jnHandlePlayer, handleJnPlatform, pauseJnPlayback, setJnContext: value => { jnContext = value; jnSave(); }, getJnContext: () => jnContext, isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { jnSubmitRating, jnReportStudyTime, jnParseAnswers, jnAnswerQuestions, jnStartExam, jnHandleExam, syncAccountContext, readAccountIdentity, detectPlatform, jnRoot, jnUrl, jnReadTasks, jnReadVideos, jnHandleDuty, jnHandleCourse, jnHandlePlayer, handleJnPlatform, pauseJnPlayback, setJnContext: value => { jnContext = value; jnSave(); }, getJnContext: () => jnContext, isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -99,6 +99,7 @@ const settleLocks = () => new Promise(resolve => setImmediate(resolve));
 
 function setupJn(pathname = '/WebTraining14/Website/Index.aspx') {
     const t = setup([], [], { url: 'https://jnftc.jnbank.com.cn' + pathname });
+    t.CONFIG.jnAutoReport = false; t.CONFIG.jnAutoExam = false;
     const elements = new Map();
     const collections = new Map();
     const originalOne = t.context.document.querySelector.bind(t.context.document);
@@ -120,6 +121,14 @@ test('金培按完整域名识别，与易知流程隔离且兼容新旧站点�
     assert.equal(t.jnUrl('javascript:alert(1)'), '');
     assert.equal(t.jnUrl('https://other.test/WebTraining14/Web/a'), '');
     assert.equal(t.jnUrl('/WebTraining14/Website/Index.aspx'), '');
+});
+
+test('金培平台不需要支持并发，并发设置固定为 1 且不可调整', () => {
+    const t = setupJn();
+    t.localStorageMap.set(t.STORAGE_KEYS.concurrency, '4');
+    assert.equal(t.getConcurrencySetting(), 1);
+    assert.equal(t.setConcurrencySetting(5), 1);
+    assert.equal(t.state.concurrency, 1);
 });
 
 test('金培游客只等待手动登录，登录后自动去对应站点任务页', async () => {
@@ -191,7 +200,7 @@ test('金培平台明确确认课程完成才返回任务，考试评价待人�
     pending.elements.set('a[onclick*="CreateExam"]', {});
     pending.jnHandleCourse();
     assert.equal(pending.state.enabled, false);
-    assert.match(pending.state.statusText, /手动考试/);
+    assert.match(pending.state.statusText, /手动完成/);
     assert.equal(pending.getHandledMaps().length, 0);
 });
 
@@ -232,6 +241,358 @@ test('暂停金培同时暂停内嵌媒体和原生页面计时', () => {
     t.pauseAutomation('测试暂停');
     assert.equal(stopped, 1);
     assert.equal(t.fixture.video.paused, true);
+});
+
+function prepareJnReport(t) {
+    t.CONFIG.jnAutoReport = true;
+    t.elements.set('#txtLoginInfoId', { value: 'fixture-session' });
+    t.setJnContext({ queue: [{ id: 'ware-1' }], index: 0,
+        courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1' });
+    let observer;
+    t.context.MutationObserver = class {
+        constructor(callback) { this.callback = callback; observer = this; this.active = false; }
+        observe() { this.active = true; }
+        disconnect() { this.active = false; }
+    };
+    // 模拟平台 myload/startclock 自己加一秒并加载上报脚本；fetch 只属于测试平台。
+    t.context.window.myload = () => {
+        t.context.window.tt = 1;
+        Promise.resolve().then(async () => {
+            if (!observer?.active) return;
+            t.context.window.m_time++;
+            const url = new URL('SetTime.ashx', t.context.location.href);
+            url.search = new URLSearchParams({ LoginInfoId: 'fixture-session', pTime: String(t.context.window.m_time) }).toString();
+            const listeners = new Map();
+            const script = { tagName: 'SCRIPT', src: url.href, addEventListener: (type, fn) => listeners.set(type, fn),
+                removeEventListener: type => listeners.delete(type) };
+            observer.callback([{ addedNodes: [script] }]);
+            try {
+                const response = await t.context.fetch(url.href);
+                const body = await response.text();
+                listeners.get(response.ok && !/<html|登录|error/i.test(body) ? 'load' : 'error')?.();
+            } catch (_) { listeners.get('error')?.(); }
+        });
+    };
+}
+
+test('金培自动计时写入 m_time，重复轮询只上报一次并返回课程核验', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    prepareJnReport(t);
+    const requests = [];
+    t.context.fetch = async url => { requests.push(url); return { ok: true, url, text: async () => '' }; };
+    await Promise.all([t.jnReportStudyTime(t.fixture.video), t.jnReportStudyTime(t.fixture.video)]);
+    assert.equal(requests.length, 1);
+    assert.equal(new URL(requests[0]).searchParams.get('pTime'), '120');
+    assert.equal(t.context.window.m_time, 120);
+    assert.equal(t.getJnContext().index, 1);
+    assert.equal(t.getHandledMaps().length, 0);
+    assert.match(t.context.location.href, /Layer_CourseInfo/);
+});
+
+test('金培所有时长上报均向上取整到60秒整数倍，157秒上报180秒', async () => {
+    for (const [duration, expected] of [[1, 60], [59.9, 60], [60, 60], [60.01, 120], [157, 180], [180, 180]]) {
+        const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+        prepareJnReport(t); t.fixture.video.duration = duration;
+        let seconds;
+        t.context.fetch = async url => { seconds = Number(new URL(url).searchParams.get('pTime')); return { ok: true, url, text: async () => '' }; };
+        await t.jnReportStudyTime(t.fixture.video);
+        assert.equal(seconds, expected); assert.equal(seconds % 60, 0);
+        assert.equal(t.context.window.m_time, expected);
+    }
+});
+
+function prepareJnRating(t) {
+    const fields = { text: { value: '' }, score: { value: '0' }, star: { value: '' } };
+    const form = { getAttribute: () => '', fields: [['__VIEWSTATE', 'fixture-state']] };
+    const button = { name: 'SubComment', value: '发表', form };
+    t.elements.set('#txtArea', fields.text); t.elements.set('#HidSpell', fields.score);
+    t.elements.set('#star_submit input[name="score"]', fields.star); t.elements.set('#SubComment', button);
+    const images = Array.from({ length: 5 }, () => ({ src: 'https://fixture/star-off.png' }));
+    t.elements.set('#star_submit', { querySelectorAll: () => images });
+    t.context.window.jQuery = () => ({ raty(method, value) { assert.equal(method, 'score'); assert.equal(value, 5); images.forEach(image => { image.src = 'https://fixture/star-on.png'; }); } });
+    t.context.FormData = class {
+        constructor(value) { this.values = [...value.fields, ['HidSpell', fields.score.value], ['score', fields.star.value], ['txtArea', fields.text.value]]; }
+        entries() { return this.values.values(); }
+        [Symbol.iterator]() { return this.entries(); }
+        set(name, value) { this.values = this.values.filter(([key]) => key !== name); this.values.push([name, value]); }
+    };
+    t.setJnContext({ courseId: 'course-1', courseUrl: t.context.location.href,
+        dutyUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyDuty/DutyShow.aspx?DutyId=task-1' });
+    return fields;
+}
+
+test('评价提交以实际表单为准，评分被页面改回0时停止，不发送非5分', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    const fields = prepareJnRating(t); let sent = 0;
+    t.context.Event = class { constructor(type) { this.type = type; } };
+    fields.text.dispatchEvent = event => { if (event.type === 'change') fields.score.value = '0'; };
+    t.context.fetch = async () => { sent++; return { ok: true, text: async () => '' }; };
+    await t.jnSubmitRating();
+    assert.equal(sent, 0); assert.equal(t.state.enabled, false);
+    assert.notEqual(t.getJnContext().rating.payloadVerified, true);
+});
+
+test('页面平均分与已有评价的重复score字段不会混入本次5分请求', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    prepareJnRating(t);
+    t.elements.get('#SubComment').form.fields.push(['score', '4.732'], ['score', '3']);
+    let sent;
+    t.context.fetch = async (url, options) => { sent = options.body; return { ok: true, url, text: async () => '' }; };
+    await t.jnSubmitRating();
+    assert.deepEqual(sent.getAll('score'), ['5']); assert.deepEqual(sent.getAll('HidSpell'), ['5']);
+    assert.equal(t.getJnContext().rating.payloadVerified, true);
+});
+
+test('评分插件未点亮五星时不提交，避免只改隐藏值而控件显示不一致', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    prepareJnRating(t); let sent = 0;
+    t.context.window.jQuery = () => ({ raty() {} });
+    t.context.fetch = async () => { sent++; return { ok: true, text: async () => '' }; };
+    await t.jnSubmitRating();
+    assert.equal(sent, 0); assert.equal(t.state.enabled, false);
+    assert.match(t.state.statusText, /未成功点亮/);
+});
+
+test('金培自动评价按原脚本填写5分和好，保留ASP表单参数且只提交一次', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    const fields = prepareJnRating(t); const requests = [];
+    t.context.fetch = async (url, options) => { requests.push(options); return { ok: true, url, text: async () => '<html></html>' }; };
+    await Promise.all([t.jnSubmitRating(), t.jnSubmitRating()]);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].body.get('__VIEWSTATE'), 'fixture-state');
+    assert.equal(requests[0].body.get('SubComment'), '发表');
+    assert.equal(fields.text.value, '好'); assert.equal(fields.score.value, '5'); assert.equal(fields.star.value, '5');
+    assert.equal(t.getHandledMaps().length, 0);
+    t.elements.set('.a-4', { getAttribute: () => 'CourseOver.png' });
+    t.jnHandleCourse();
+    assert.match(t.context.location.href, /DutyShow/);
+    assert.equal(t.state.enabled, true);
+});
+
+test('金培评价页地址含#none时真正刷新页面，不停留在页内跳转等待', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1#none');
+    prepareJnRating(t);
+    t.context.fetch = async url => ({ ok: true, url, text: async () => '' });
+    await t.jnSubmitRating();
+    assert.equal(t.context.location.reloads, 1);
+    assert.equal(t.state.enabled, true);
+});
+
+test('评价未得到平台确认时有限核验，不重复评价、不提前切下一门', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    prepareJnRating(t); let requests = 0;
+    t.context.fetch = async url => { requests++; return { ok: true, url, text: async () => '' }; };
+    await t.jnSubmitRating();
+    for (let i = 0; i < 4; i++) { t.advance(5000); await t.jnSubmitRating(); }
+    assert.equal(requests, 1); assert.equal(t.state.enabled, false);
+    assert.match(t.state.statusText, /仍未确认/);
+    assert.equal(t.getHandledMaps().length, 0);
+});
+
+test('评价提交期间暂停或换号，迟到响应不再跳转', async () => {
+    for (const change of ['pause', 'account']) {
+        const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+        prepareJnRating(t); let finish;
+        t.context.fetch = url => new Promise(resolve => { finish = () => resolve({ ok: true, url, text: async () => '' }); });
+        const pending = t.jnSubmitRating();
+        if (change === 'pause') t.pauseAutomation('暂停');
+        else t.localStorageMap.set('_kme_account_epoch', 'changed');
+        finish(); await pending;
+        assert.equal(t.getHandledMaps().length, 0);
+        assert.match(t.context.location.href, /Layer_CourseInfo/);
+    }
+});
+
+test('金培整页跳转后恢复任务课程小节名称，初始化日志不再全为空', () => {
+    const context = { title: '测试任务', courseTitle: '测试课程', queue: [{ title: '测试小节' }], index: 0 };
+    const t = setup([['_jnftc_context', JSON.stringify(context)]], [], { url: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/OnLineRead.aspx' });
+    assert.equal(t.state.currentTask, '测试任务'); assert.equal(t.state.currentCourse, '测试课程');
+    assert.equal(t.state.currentSubVideo, '测试小节');
+});
+
+test('金培计时任务等待时长就绪及定时调度，不在首次识别时立即上报', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    prepareJnReport(t); let requests = 0;
+    t.context.fetch = async url => { requests++; return { ok: true, url, text: async () => '' }; };
+    t.jnHandlePlayer(); assert.equal(requests, 0);
+    t.advance(3000); await t.jnHandlePlayer(); assert.equal(requests, 1);
+});
+
+test('金培时长上报遇到登录页、错误响应时不推进课件', async () => {
+    for (const response of [{ ok: true, text: async () => '<html>登录</html>' }, { ok: false, text: async () => 'error' }]) {
+        const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+        prepareJnReport(t); t.context.fetch = async () => response;
+        await t.jnReportStudyTime(t.fixture.video);
+        assert.equal(t.getJnContext().index, 0);
+        assert.equal(t.state.enabled, false);
+        assert.match(t.context.location.href, /OnLineRead/);
+    }
+});
+
+test('金培上报等待中暂停、换号或更换播放器，迟到响应不切课', async () => {
+    for (const change of ['pause', 'account', 'video']) {
+        const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+        prepareJnReport(t); let finish;
+        t.context.fetch = url => new Promise(resolve => { finish = () => resolve({ ok: true, url, text: async () => '' }); });
+        const pending = t.jnReportStudyTime(t.fixture.video);
+        await Promise.resolve();
+        if (change === 'pause') t.pauseAutomation('暂停');
+        if (change === 'account') t.localStorageMap.set('_kme_account_epoch', 'another-account');
+        if (change === 'video') t.fixture.video = { ...t.fixture.video };
+        finish(); await pending;
+        assert.equal(t.getJnContext().index, 0);
+        assert.match(t.context.location.href, /OnLineRead/);
+    }
+});
+
+test('金培先设为60*N-1，等平台走到整分钟并完成原生脚本加载才切课', async () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    prepareJnReport(t); let finish;
+    t.context.fetch = url => new Promise(resolve => { finish = () => resolve({ ok: true, url, text: async () => '' }); });
+    const pending = t.jnReportStudyTime(t.fixture.video);
+    assert.equal(t.context.window.m_time, 119);
+    assert.equal(t.getJnContext().index, 0);
+    await Promise.resolve();
+    assert.equal(t.context.window.m_time, 120);
+    assert.equal(t.getJnContext().index, 0);
+    finish(); await pending;
+    assert.equal(t.getJnContext().index, 1);
+});
+
+test('金培原生计时器缺失或一直不触发上报时有限暂停', async () => {
+    for (const missing of [true, false]) {
+        const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+        prepareJnReport(t);
+        if (missing) delete t.context.window.myload;
+        else t.context.window.myload = () => {};
+        const pending = t.jnReportStudyTime(t.fixture.video);
+        if (!missing) t.advance(10000);
+        await pending;
+        assert.equal(t.state.enabled, false); assert.equal(t.getJnContext().index, 0);
+    }
+});
+
+function jnExamFixture(values = ['A', 'BD', '0']) {
+    const optionsByNumber = new Map();
+    const questions = values.map((value, i) => {
+        const id = i + 1;
+        const answer = { id: 'tmjo_' + id, value, getAttribute: () => value };
+        const options = Array.from({ length: 4 }, (_, index) => ({ id: 'tm_' + id + '_' + index,
+            type: i === 1 ? 'checkbox' : 'radio', checked: false, clicks: 0,
+            click() { this.clicks++; if (this.type === 'radio') options.forEach(other => { other.checked = false; }); this.checked = !this.checked; } }));
+        optionsByNumber.set(String(id), options);
+        return { querySelector: () => answer };
+    });
+    return { questions, optionsByNumber,
+        doc: { querySelectorAll(selector) {
+            if (selector === '.tb_title') return questions;
+            const number = selector.match(/tm_(\d+)_/)?.[1];
+            return optionsByNumber.get(number) || [];
+        }, querySelector() { return null; } } };
+}
+
+test('金培自动答题支持单选、多选、判断题，重复调用不重复点击正确选项', () => {
+    const t = setupJn(); const fixture = jnExamFixture();
+    assert.equal(t.jnAnswerQuestions(fixture.doc), 3);
+    assert.deepEqual([...fixture.optionsByNumber.values()].map(options => options.filter(o => o.checked).map(o => o.id)),
+        [['tm_1_0'], ['tm_2_1', 'tm_2_3'], ['tm_3_1']]);
+    t.jnAnswerQuestions(fixture.doc);
+    assert.equal([...fixture.optionsByNumber.values()].flat().reduce((sum, option) => sum + option.clicks, 0), 4);
+    assert.deepEqual(Array.from(t.jnParseAnswers('A, A;G')), ['A', 'G']);
+    assert.throws(() => t.jnParseAnswers('unknown'), /格式/);
+});
+
+test('金培缺答案、缺选项、未知题型时先整体校验，不部分作答或交卷', () => {
+    const t = setupJn();
+    for (const value of ['', 'H', 'this is not an answer']) {
+        const fixture = jnExamFixture(['A', value]);
+        assert.throws(() => t.jnAnswerQuestions(fixture.doc));
+        assert.equal([...fixture.optionsByNumber.values()].flat().some(option => option.checked), false);
+    }
+    const missing = jnExamFixture(['G']);
+    assert.throws(() => t.jnAnswerQuestions(missing.doc), /选项/);
+    const radio = jnExamFixture(['AB']);
+    assert.throws(() => t.jnAnswerQuestions(radio.doc), /题型/);
+});
+
+test('金培考试入口解析参数而不执行页面源码，同一考试不会反复进入', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    t.CONFIG.jnAutoExam = true;
+    t.context.window.btnGiveUp_onclick = Object.assign(() => {}, { toString: () => "function btnGiveUp_onclick(){var sStudentId='student-1';}" });
+    const link = { getAttribute: () => "CreateExam('exam-1')" };
+    t.jnStartExam(link);
+    const url = new URL(t.context.location.href);
+    assert.equal(url.searchParams.get('Tk_Cl_Id'), 'exam-1');
+    assert.equal(url.searchParams.get('Clerk_id'), 'student-1');
+    t.context.location.href = 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1';
+    t.jnStartExam(link);
+    assert.equal(t.state.enabled, false);
+    assert.match(t.state.statusText, /本轮已尝试/);
+});
+
+test('金培跨同源frame答题和交卷只执行一次，提交后返回详情而不登记通过', () => {
+    const t = setupJn('/WebTraining14/Web/MyExam/aspNet/ExamMain.aspx');
+    t.CONFIG.jnAutoExam = true;
+    t.setJnContext({ courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1',
+        exam: { id: 'exam-1', phase: 'opened', startedAt: 0 } });
+    const fixture = jnExamFixture(); let submitted = 0;
+    const form = { submit() { submitted++; } };
+    fixture.doc.querySelector = selector => selector === '#frmExam' ? form : null;
+    fixture.doc.defaultView = { confirm: () => false, total: 3, check_tx: number => fixture.optionsByNumber.get(String(number)).some(o => o.checked) };
+    const header = { querySelectorAll: () => [], defaultView: {
+        confirm: () => false, SubmitExam() { assert.equal(fixture.doc.defaultView.confirm('确认提交答卷吗？'), true); form.submit(); }
+    } };
+    t.collections.set('iframe,frame', [{ contentDocument: fixture.doc }, { contentDocument: header }]);
+    t.jnHandleExam();
+    assert.equal(submitted, 0);
+    assert.equal(t.getJnContext().exam.phase, 'answered');
+    t.advance(2000); t.jnHandleExam();
+    assert.equal(submitted, 0);
+    t.advance(0); t.jnHandleExam();
+    assert.equal(submitted, 1);
+    assert.equal(t.getJnContext().exam.phase, 'submitted');
+    assert.equal(t.getHandledMaps().length, 0);
+    t.advance(15000); t.jnHandleExam();
+    assert.match(t.context.location.href, /Layer_CourseInfo/);
+});
+
+test('金培考试加载失败或答案不完整时暂停，绝不交卷或记为通过', () => {
+    const t = setupJn('/WebTraining14/Web/MyExam/aspNet/ExamMain.aspx');
+    t.setJnContext({ courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1',
+        exam: { id: 'exam-1', phase: 'opened', startedAt: 0 } });
+    let submitted = 0; const fixture = jnExamFixture(['']);
+    fixture.doc.defaultView = { SubmitExam: () => submitted++ };
+    t.collections.set('iframe,frame', [{ contentDocument: fixture.doc }]);
+    t.jnHandleExam();
+    assert.equal(submitted, 0);
+    assert.equal(t.state.enabled, false);
+    assert.equal(t.getHandledMaps().length, 0);
+});
+
+test('平台原生check_tx仍判定未答时不触发SubmitExam', () => {
+    const t = setupJn('/WebTraining14/Web/MyExam/aspNet/ExamMain.aspx');
+    t.setJnContext({ courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1', exam: { id: 'exam-1', phase: 'opened', startedAt: 0 } });
+    const fixture = jnExamFixture(); let submitted = 0;
+    fixture.doc.defaultView = { total: 3, check_tx: () => false, SubmitExam: () => submitted++ };
+    fixture.doc.querySelector = selector => selector === '#frmExam' ? { submit: () => submitted++ } : null;
+    t.collections.set('iframe,frame', [{ contentDocument: fixture.doc }]);
+    t.jnHandleExam(); t.advance(2000); t.jnHandleExam(); t.advance(0);
+    assert.equal(submitted, 0); assert.equal(t.state.enabled, false);
+    assert.notEqual(t.getJnContext().exam.phase, 'submitted');
+});
+
+test('只调用SubmitExam但未真正提交原生表单时，不记录已交卷，也不离开试卷', () => {
+    const t = setupJn('/WebTraining14/Web/MyExam/aspNet/ExamMain.aspx');
+    t.setJnContext({ courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1', exam: { id: 'exam-1', phase: 'opened', startedAt: 0 } });
+    const fixture = jnExamFixture(); let opened = 0;
+    fixture.doc.defaultView = { SubmitExam: () => opened++ };
+    fixture.doc.querySelector = selector => selector === '#frmExam' ? { submit() {} } : null;
+    t.collections.set('iframe,frame', [{ contentDocument: fixture.doc }]);
+    t.jnHandleExam(); t.advance(2000); t.jnHandleExam(); t.advance(0);
+    assert.equal(opened, 1); assert.equal(t.getJnContext().exam.phase, 'submitting');
+    assert.equal(t.getJnContext().exam.submissionObserved, undefined);
+    t.advance(16000); t.jnHandleExam();
+    assert.equal(t.state.enabled, false); assert.match(t.context.location.href, /ExamMain/);
 });
 
 test('首次识别账号清除未归属的旧进度，保留平台登录和界面偏好', () => {

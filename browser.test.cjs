@@ -19,7 +19,29 @@ async function run() {
     wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
     wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32);
     wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(16000, 40);
+    const submittedTimes = [];
+    const submittedRatings = [];
+    const ratingScoreLists = [];
     const server = http.createServer((_req, res) => {
+        if (_req.url.startsWith('/WebTraining14/Web/MyClass/SetTime.ashx')) {
+            submittedTimes.push(new URL(_req.url, 'http://fixture').searchParams.get('pTime'));
+            res.setHeader('Content-Type', 'application/javascript'); res.end(''); return;
+        }
+        if (_req.url.startsWith('/exam-frameset')) {
+            res.setHeader('Content-Type', 'text/html');
+            res.end('<html><frameset rows="80,*"><frame name="topFrame" src="/exam-header"><frame name="mainFrame" src="/exam-answers"></frameset></html>'); return;
+        }
+        if (_req.url.startsWith('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx')) {
+            const respond = () => {
+                res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                res.end('<html><body><main id="fixture"></main><a class="a-2" style="background-image:url(ico_kecheng_t3_over.png)"></a><a class="a-4" style="background-image:url(CourseOver.png)"></a></body></html>');
+            };
+            if (_req.method === 'POST') {
+                let body = ''; _req.on('data', chunk => { body += chunk; });
+                _req.on('end', () => { const data = new URLSearchParams(body); submittedRatings.push(Object.fromEntries(data)); ratingScoreLists.push(data.getAll('score')); respond(); });
+            } else respond();
+            return;
+        }
         if (_req.url.startsWith('/tail.wav')) { res.setHeader('Content-Type', 'audio/wav'); res.end(wav); return; }
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         if (_req.url.startsWith('/WebTraining14/Web/MyDuty/MyDutyList.aspx')) {
@@ -80,6 +102,7 @@ async function run() {
         source = source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter=false;CONFIG.debugPlayback=true;window.testApi={state,mainLoop,pauseAutomation,getTaskSelection,getSubVideoKey,getCurrentCourseId,switchToNextSubVideoOrCourse,handleMyTaskPage,saveTaskSelection,setConcurrencySetting,observeVideoPlayback,handleVideoPlayback,formatDiagnosticLogs,hasPlaybackCompletion,isItemCompleted,getCourseOutcomes};})();');
         await evaluate(source);
         await evaluate("testApi.mainLoop();document.getElementById('_kme_tool_host').shadowRoot.querySelectorAll('#jinpei-task-list input')[0].click()");
+        assert.equal(await evaluate("getComputedStyle(document.getElementById('_kme_tool_host').shadowRoot.getElementById('jinpei-concurrency-controls')).display"), 'flex');
         assert.deepEqual(await evaluate('testApi.getTaskSelection().ids'), ['12']);
         await evaluate("document.getElementById('_kme_tool_host').shadowRoot.getElementById('jinpei-toggle-btn').click()");
         await delay(1300);
@@ -193,13 +216,18 @@ async function run() {
         await call('Page.navigate', { url: 'http://127.0.0.1:' + server.address().port + '/WebTraining14/Website/Index.aspx' });
         for (let tries = 0; tries < 50 && !await evaluate("location.pathname.includes('WebTraining14')&&!!document.getElementById('fixture')"); tries++) await delay(100);
         const jnSource = source.replace('const PLATFORM = detectPlatform(location.href);', "const PLATFORM = 'jnftc';")
-            .replace('getCourseOutcomes};', 'getCourseOutcomes,loadJnTaskCatalog,getTaskCatalog,jnReadVideos,jnHandlePlayer,getJnProgress:()=>jnProgress};');
+            .replace('CONFIG.enableJitter=false;', 'CONFIG.jnAutoReport=false;CONFIG.enableJitter=false;')
+            .replace('getCourseOutcomes};', 'getCourseOutcomes,CONFIG,getConcurrencySetting,setConcurrencySetting,loadJnTaskCatalog,getTaskCatalog,jnReadVideos,jnHandlePlayer,jnReportStudyTime,jnHandleExam,jnSubmitRating,setJnContext:value=>{jnContext=value;jnSave();},getJnContext:()=>jnContext,getJnProgress:()=>jnProgress};');
         await evaluate(jnSource);
         await evaluate('testApi.mainLoop();testApi.loadJnTaskCatalog(true)');
         assert.equal(await evaluate('testApi.getTaskCatalog().length'), 2);
         await evaluate('testApi.mainLoop()');
         assert.equal(await evaluate("document.getElementById('_kme_tool_host').shadowRoot.textContent.includes('当前平台：江南金培')"), true);
         assert.equal(await evaluate("document.getElementById('_kme_tool_host').shadowRoot.getElementById('jinpei-open-tab-btn').disabled"), true);
+        assert.deepEqual(await evaluate("(()=>{const r=document.getElementById('_kme_tool_host').shadowRoot;return ['jinpei-concurrency-controls','jinpei-open-tab-btn'].map(id=>getComputedStyle(r.getElementById(id)).display);})()"), ['none', 'none']);
+        assert.equal(await evaluate("testApi.getConcurrencySetting()"), 1);
+        assert.equal(await evaluate("testApi.setConcurrencySetting(4)"), 1);
+        assert.equal(await evaluate("testApi.getConcurrencySetting()"), 1);
         assert.equal(await evaluate("document.getElementById('_kme_tool_host').shadowRoot.querySelectorAll('#jinpei-task-list input').length"), 2);
         assert.equal(await evaluate('testApi.state.enabled'), false);
         await call('Page.bringToFront');
@@ -216,8 +244,74 @@ async function run() {
         await evaluate('testApi.jnHandlePlayer()');
         assert.match(await evaluate('testApi.state.statusText'), /等待平台同步/);
         await evaluate("testApi.pauseAutomation('jnftc fixture finished')");
+        await evaluate(`(async()=>{testApi.CONFIG.jnAutoReport=true;testApi.state.enabled=true;testApi.setJnContext({index:0});
+            document.getElementById('txtLoginInfoId').value='fixture-session';
+            window.myload=function(){window.tt=setInterval(()=>{window.m_time++;if(window.m_time%60===0){const s=document.createElement('script');s.src='/WebTraining14/Web/MyClass/SetTime.ashx?LoginInfoId=fixture-session&pTime='+window.m_time;document.head.appendChild(s);}},1000);};
+            const pending=testApi.jnReportStudyTime(jnVideo);window.initialNativeTime=window.m_time;await pending;})()`);
+        assert.equal(await evaluate('initialNativeTime'), 59);
+        assert.deepEqual(submittedTimes, ['60']);
+        assert.equal(await evaluate('window.m_time'), 60);
+        assert.equal(await evaluate('testApi.getJnContext().report.phase'), 'sent');
+        assert.equal(await evaluate('testApi.getCourseOutcomes().length'), 0);
+        await evaluate(`testApi.state.enabled=true;const pending=testApi.jnReportStudyTime(jnVideo);testApi.pauseAutomation('cancel before native tick');pending.catch(()=>{});`);
+        await delay(1200);
+        assert.deepEqual(submittedTimes, ['60']);
+        await evaluate(`
+            history.pushState({},'', '/WebTraining14/Web/MyExam/aspNet/ExamMain.aspx');
+            document.getElementById('fixture').innerHTML='<iframe id="exam-answers"></iframe><iframe id="exam-header"></iframe>';
+            window.examAnswerFrame=document.getElementById('exam-answers');window.examHeaderFrame=document.getElementById('exam-header');
+            examAnswerFrame.contentDocument.body.innerHTML='<div class="tb_title"><input type="hidden" id="tmjo_1" value="B"><input id="tm_1_0" type="radio" name="q1"><input id="tm_1_1" type="radio" name="q1"></div><div class="tb_title"><input type="hidden" id="tmjo_2" value="AC"><input type="checkbox" id="tm_2_0"><input type="checkbox" id="tm_2_1"><input type="checkbox" id="tm_2_2"></div>';
+            window.examSubmissions=0;
+            window.examForm=examAnswerFrame.contentDocument.createElement('form');examForm.id='frmExam';examAnswerFrame.contentDocument.body.appendChild(examForm);
+            examForm.submit=function(){examSubmissions++;};
+            examAnswerFrame.contentWindow.initialize=function(){if(this.confirm('确认提交答卷吗？'))examForm.submit();};
+            examHeaderFrame.contentWindow.SubmitExam=function(){examAnswerFrame.contentWindow.initialize();};
+            testApi.setJnContext({courseUrl:location.origin+'/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=fixture',exam:{id:'fixture',phase:'opened',startedAt:Date.now()}});
+            testApi.state.enabled=true;testApi.jnHandleExam();testApi.jnHandleExam();
+        `);
+        assert.equal(await evaluate('examSubmissions'), 0);
+        assert.equal(await evaluate('testApi.getJnContext().exam.phase'), 'answered');
+        await delay(2100);
+        await evaluate('testApi.jnHandleExam()');
+        for (let tries = 0; tries < 30 && !await evaluate('examSubmissions'); tries++) await delay(100);
+        assert.equal(await evaluate('examSubmissions'), 1);
+        assert.deepEqual(await evaluate("Array.from(examAnswerFrame.contentDocument.querySelectorAll('input:checked')).map(el=>el.id)"), ['tm_1_1', 'tm_2_0', 'tm_2_2']);
+        assert.equal(await evaluate('testApi.getJnContext().exam.phase'), 'submitted');
+        assert.equal(await evaluate('testApi.getCourseOutcomes().length'), 0);
+        await evaluate(`examAnswerFrame.contentDocument.getElementById('tmjo_2').value='';
+            testApi.setJnContext({courseUrl:location.origin+'/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=fixture',exam:{id:'fixture-2',phase:'opened',startedAt:Date.now()}});
+            testApi.jnHandleExam();`);
+        assert.equal(await evaluate('testApi.state.enabled'), false);
+        assert.equal(await evaluate('examSubmissions'), 1);
+        await evaluate(`
+            history.pushState({},'', '/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=fixture#none');
+            document.getElementById('fixture').innerHTML='<form method="post"><input type="hidden" name="__VIEWSTATE" value="fixture"><input type="hidden" id="HidSpell" name="HidSpell" value="0"><i id="star_submit"><input type="hidden" name="score"></i><textarea id="txtArea" name="txtArea"></textarea><input type="submit" id="SubComment" name="SubComment" value="发表"></form>';
+            const average=document.createElement('input');average.type='hidden';average.name='score';average.value='4.732';document.querySelector('form').prepend(average);
+            for(let i=1;i<=5;i++){const img=document.createElement('img');img.src='/star-off.png';img.alt=String(i);document.getElementById('star_submit').appendChild(img);}
+            window.jQuery=function(){return {raty:function(method,value){if(method==='score'&&value===5)document.querySelectorAll('#star_submit img').forEach(img=>{img.src='/star-on.png';});}};};
+            testApi.setJnContext({courseId:'fixture',courseUrl:location.href,dutyUrl:location.origin+'/WebTraining14/Web/MyDuty/DutyShow.aspx?DutyId=fixture'});
+            testApi.state.enabled=true;testApi.jnSubmitRating();window.starsBeforeSend=Array.from(document.querySelectorAll('#star_submit img')).filter(img=>img.src.endsWith('/star-on.png')).length;
+        `);
+        // 实际 HTTP 请求及界面状态都要满足五星，不能只检查赋值代码。
+        const visibleStars = await evaluate('starsBeforeSend');
+        assert.equal(visibleStars, 5);
+        for (let tries = 0; tries < 50 && !await evaluate("!!document.querySelector('.a-4[style*=\"CourseOver\"]')"); tries++) await delay(100);
+        assert.equal(submittedRatings.length, 1);
+        assert.equal(submittedRatings[0].HidSpell, '5'); assert.equal(submittedRatings[0].score, '5');
+        assert.deepEqual(ratingScoreLists, [['5']]);
+        assert.equal(submittedRatings[0].txtArea, '好'); assert.equal(submittedRatings[0].__VIEWSTATE, 'fixture');
+        await evaluate(jnSource);
+        await evaluate('testApi.state.enabled=true;testApi.mainLoop()');
+        for (let tries = 0; tries < 50 && !await evaluate("location.pathname.endsWith('/DutyShow.aspx')"); tries++) await delay(100);
+        assert.equal(await evaluate("location.pathname.endsWith('/DutyShow.aspx')"), true);
+        await call('Page.navigate', { url: 'http://127.0.0.1:' + server.address().port + '/exam-frameset' });
+        for (let tries = 0; tries < 50 && !await evaluate("document.body?.tagName==='FRAMESET'&&frames.length===2&&frames[1].document.URL.endsWith('/exam-answers')&&frames[1].document.body?.tagName==='BODY'"); tries++) await delay(100);
+        await evaluate(jnSource + ';testApi.mainLoop()');
+        assert.equal(await evaluate("!!frames[1].document.getElementById('_kme_tool_host')?.shadowRoot.getElementById('jinpei-hud')"), true);
         console.log('Chrome passed: native ended reset and automatic next-section, strict completion markers, delayed chapter loading, task selector, single clicks, and cross-map scheduling with native Web Locks.');
         console.log('JNFTC Chrome passed: platform HUD, manual login wait, task pagination and selection, sequential controls, and native ended reset handling.');
+        console.log('JNFTC actions passed: native 60*N-1 timer/report and pause cancellation, frame-based exam selection and single submission, incomplete-answer pause, and frameset HUD mounting.');
+        console.log('JNFTC rating passed: real ASP form payload, single rating submission, course completion verification, and automatic return to tasks.');
     } finally {
         if (call && ws?.readyState === WebSocket.OPEN) await call('Browser.close').catch(() => {});
         ws?.close();

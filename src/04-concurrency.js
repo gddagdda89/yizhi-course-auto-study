@@ -52,6 +52,7 @@
     }
 
     function getConcurrencySetting() {
+        if (IS_JNFTC) return 1;
         const val = parseInt(getLocalItem(STORAGE_KEYS.concurrency, (CONFIG.defaultConcurrency || 1).toString()), 10);
         if (isNaN(val) || val < 1) return 1;
         if (val > (CONFIG.maxConcurrency || 6)) return CONFIG.maxConcurrency || 6;
@@ -59,7 +60,7 @@
     }
 
     function setConcurrencySetting(val) {
-        const clamped = Math.max(1, Math.min(CONFIG.maxConcurrency || 6, parseInt(val, 10) || 1));
+        const clamped = IS_JNFTC ? 1 : Math.max(1, Math.min(CONFIG.maxConcurrency || 6, parseInt(val, 10) || 1));
         setLocalItem(STORAGE_KEYS.concurrency, clamped.toString());
         state.concurrency = clamped;
         const valEl = getHUDElement('jinpei-concurrency-val');
