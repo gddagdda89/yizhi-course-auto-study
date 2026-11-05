@@ -30,7 +30,7 @@
 
     // 在调度锁内核对新版独立心跳；真实课程锁仍在时保留占用，包括冻结的窗口。
     async function reconcileCourseHeartbeats() {
-        const locks = await navigator.locks.query();
+        const locks = await navigator.locks.query({ __internal: true });
         const held = new Set(locks.held.map(lock => lock.name));
         const active = getActiveTabs();
         for (const [id, data] of Object.entries(active)) {
@@ -73,13 +73,15 @@
         return clamped;
     }
 
+    const rawStorageKey = typeof Storage !== 'undefined' && Storage.prototype.key ? Storage.prototype.key : null;
+
     function getActiveTabs() {
         try {
             // 旧版记录只读兼容；新版每个窗口独立写入，避免覆盖其他窗口。
             let map = {};
             try { map = JSON.parse(getLocalItem(STORAGE_KEYS.activeTabs, '{}')) || {}; } catch (_) {}
             for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
+                const key = rawStorageKey ? rawStorageKey.call(localStorage, i) : localStorage.key(i);
                 if (!key || !key.startsWith(TAB_STORAGE_PREFIX)) continue;
                 try { map[key.slice(TAB_STORAGE_PREFIX.length)] = JSON.parse(localStorage.getItem(key)); } catch (_) {}
             }

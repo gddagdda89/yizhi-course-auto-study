@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.8.1
+// @version      1.8.2
 // @description  易知与江南金培课程学习助手，自动识别平台，支持课程连播与学习状态检查
 // @author       gddagdda89
 // @license      MIT
@@ -19,7 +19,7 @@
 (function () {
     'use strict';
 
-const SCRIPT_VERSION = '1.8.1';
+const SCRIPT_VERSION = '1.8.2';
 
     function detectPlatform(url) {
         return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
@@ -28,7 +28,7 @@ const SCRIPT_VERSION = '1.8.1';
     const IS_JNFTC = PLATFORM === 'jnftc';
     const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.1】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.2】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -46,6 +46,10 @@ const SCRIPT_VERSION = '1.8.1';
         autoMute: true,           // 自动静音播放
         jnAutoReport: true,       // 金培：移植 Python 的课件时长提交，随后返回课程核验
         jnAutoExam: true,         // 金培：识别页面现成答案并交卷；不支持的题型暂停
+        jnExamQuestionDelayMin: 2000, // 金培：每题拟人作答最小间隔 (2 秒)
+        jnExamQuestionDelayMax: 5000, // 金培：每题拟人作答最大间隔 (5 秒)
+        jnExamWaitPerQuestionMin: 8,  // 金培：整套试卷每题拟人交卷等待最小秒数 (8 秒/题)
+        jnExamWaitPerQuestionMax: 15, // 金培：整套试卷每题拟人交卷等待最大秒数 (15 秒/题)
         playbackRate: 1.0,        // 正常播放速度
         debugPlayback: false,    // 排查播放问题时开启详细事件日志，日常使用关闭
         enableJitter: typeof navigator !== 'undefined', // 浏览器真实环境下开启拟人随机时间抖动
@@ -257,7 +261,7 @@ function getStorageItem(keyName, legacyKey) {
 
     // 在调度锁内核对新版独立心跳；真实课程锁仍在时保留占用，包括冻结的窗口。
     async function reconcileCourseHeartbeats() {
-        const locks = await navigator.locks.query();
+        const locks = await navigator.locks.query({ __internal: true });
         const held = new Set(locks.held.map(lock => lock.name));
         const active = getActiveTabs();
         for (const [id, data] of Object.entries(active)) {
@@ -300,13 +304,15 @@ function getStorageItem(keyName, legacyKey) {
         return clamped;
     }
 
+    const rawStorageKey = typeof Storage !== 'undefined' && Storage.prototype.key ? Storage.prototype.key : null;
+
     function getActiveTabs() {
         try {
             // 旧版记录只读兼容；新版每个窗口独立写入，避免覆盖其他窗口。
             let map = {};
             try { map = JSON.parse(getLocalItem(STORAGE_KEYS.activeTabs, '{}')) || {}; } catch (_) {}
             for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
+                const key = rawStorageKey ? rawStorageKey.call(localStorage, i) : localStorage.key(i);
                 if (!key || !key.startsWith(TAB_STORAGE_PREFIX)) continue;
                 try { map[key.slice(TAB_STORAGE_PREFIX.length)] = JSON.parse(localStorage.getItem(key)); } catch (_) {}
             }
@@ -602,6 +608,77 @@ function getStorageItem(keyName, legacyKey) {
 
         if (typeof el.click === 'function') {
             el.click();
+        }
+    }
+
+    // [防检测 3: 原生函数伪装与特征隐藏 Native Function Masquerade]
+    const nativeFnToString = Function.prototype.toString;
+    const hookedFunctions = new WeakMap();
+
+    function makeNativeFunction(fn, original, name) {
+        if (typeof fn !== 'function') return fn;
+        const fnName = name || original?.name || fn.name || '';
+        const nativeString = `function ${fnName}() { [native code] }`;
+        hookedFunctions.set(fn, nativeString);
+        try {
+            Object.defineProperty(fn, 'name', { value: fnName, configurable: true });
+            Object.defineProperty(fn, 'length', { value: original ? original.length : fn.length, configurable: true });
+            const toStringFn = function toString() {
+                if (this === fn || this === toStringFn) return nativeString;
+                return nativeFnToString.call(this);
+            };
+            hookedFunctions.set(toStringFn, `function toString() { [native code] }`);
+            Object.defineProperty(fn, 'toString', { value: toStringFn, writable: true, configurable: true });
+        } catch (_) {}
+        return fn;
+    }
+
+    try {
+        const patchedToString = function toString() {
+            if (hookedFunctions.has(this)) return hookedFunctions.get(this);
+            return nativeFnToString.call(this);
+        };
+        hookedFunctions.set(patchedToString, `function toString() { [native code] }`);
+        Object.defineProperty(Function.prototype, 'toString', {
+            value: patchedToString,
+            writable: true,
+            configurable: true,
+        });
+    } catch (_) {}
+
+    // [防检测 4: 跨标签 Web Locks 与存储特征脱敏隐藏]
+    function enableLockStealth() {
+        if (typeof navigator === 'undefined' || !navigator.locks || typeof navigator.locks.query !== 'function') return;
+        if (navigator.locks.query.__isStealth) return;
+        const origQuery = navigator.locks.query.bind(navigator.locks);
+        const stealthQuery = makeNativeFunction(async function query(options) {
+            const result = await origQuery();
+            if (options?.__internal) return result;
+            return {
+                held: (result.held || []).filter(l => !l.name?.startsWith('_kme_') && !l.name?.startsWith('jinpei_')),
+                pending: (result.pending || []).filter(l => !l.name?.startsWith('_kme_') && !l.name?.startsWith('jinpei_')),
+            };
+        }, origQuery, 'query');
+        stealthQuery.__isStealth = true;
+        navigator.locks.query = stealthQuery;
+    }
+
+    function enableStorageStealth() {
+        if (typeof window === 'undefined' || !window.Storage) return;
+        if (Storage.prototype.key.__isStealth) return;
+        const isHidden = key => typeof key === 'string' && (key.startsWith('_kme_') || key.startsWith('jinpei_'));
+        const origKey = Storage.prototype.key;
+        if (typeof origKey === 'function') {
+            const stealthKey = makeNativeFunction(function key(index) {
+                const visible = [];
+                for (let i = 0; i < this.length; i++) {
+                    const k = origKey.call(this, i);
+                    if (k && !isHidden(k)) visible.push(k);
+                }
+                return visible[index] !== undefined ? visible[index] : null;
+            }, origKey, 'key');
+            stealthKey.__isStealth = true;
+            Storage.prototype.key = stealthKey;
         }
     }
 
@@ -1455,6 +1532,10 @@ function createHUD() {
         if (!host && typeof hudDocument.createElement === 'function' && hudDocument.body) {
             host = hudDocument.createElement('div');
             host.id = '_kme_tool_host';
+            if (typeof host.setAttribute === 'function') {
+                host.setAttribute('aria-hidden', 'true');
+                host.setAttribute('data-nosnippet', 'true');
+            }
             host.style.position = 'absolute';
             host.style.top = '0';
             host.style.left = '0';
@@ -1537,7 +1618,7 @@ function createHUD() {
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.1</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.2</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -4078,13 +4159,13 @@ let jnReportPromise = null;
         return [...new Set(text.match(/[A-G01]/g))];
     }
 
-    function jnAnswerQuestions(doc) {
+    function jnParseExamPlans(doc) {
         const questions = Array.from(doc.querySelectorAll('.tb_title'));
         if (!questions.length) throw new Error('未找到可识别的考试题目');
         const indexes = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, '1': 0, '0': 1 };
         const seen = new Set();
         // 所有题目先校验，再操作选项；缺题、缺答案、未知题型均不会交卷。
-        const plans = questions.map((question, index) => {
+        return questions.map((question, index) => {
             const answer = question.querySelector('[id^="tmjo_"]') || doc.querySelector('#tmjo_' + (index + 1));
             const number = answer?.id?.match(/^tmjo_(\d+)$/)?.[1];
             if (!number || seen.has(number)) throw new Error('题目标识缺失或重复');
@@ -4096,14 +4177,25 @@ let jnReportPromise = null;
                 desired.length > 1 && options.some(option => option.type === 'radio')) throw new Error('题目选项不完整或题型不支持');
             return { options, desired };
         });
-        for (const { options, desired } of plans) {
-            for (const option of options) {
-                const expected = desired.includes(option.id);
-                if (option.checked !== expected && (expected || option.type === 'checkbox')) option.click();
+    }
+
+    function jnApplyExamPlan(plan) {
+        const { options, desired } = plan;
+        for (const option of options) {
+            const expected = desired.includes(option.id);
+            if (option.checked !== expected && (expected || option.type === 'checkbox')) {
+                simulateHumanClick(option);
             }
-            if (options.some(option => option.checked !== desired.includes(option.id))) throw new Error('选项未成功选中，已停止交卷');
         }
-        return questions.length;
+        if (options.some(option => option.checked !== desired.includes(option.id))) {
+            throw new Error('选项未成功选中，已停止交卷');
+        }
+    }
+
+    function jnAnswerQuestions(doc) {
+        const plans = jnParseExamPlans(doc);
+        for (const plan of plans) jnApplyExamPlan(plan);
+        return plans.length;
     }
 
     function jnStartExam(link) {
@@ -4124,16 +4216,22 @@ let jnReportPromise = null;
     function jnExamDialogs(win) {
         const originalConfirm = win.confirm?.bind(win);
         const originalAlert = win.alert?.bind(win);
-        if (originalConfirm) win.confirm = message => state.enabled && ['submitting', 'submitted'].includes(jnContext.exam?.phase) &&
-            /交卷|提交.*(?:试卷|答案|考试)|(?:确定|确认).*提交|结束.*考试/.test(String(message)) ? true : originalConfirm(message);
-        if (originalAlert) win.alert = message => {
-            if (state.enabled && /还有未答|题目.*未.*答/.test(String(message))) {
-                pauseAutomation('平台检测到未答题，已取消自动交卷，请检查选项。');
-                throw new Error('平台检测到未答题');
-            }
-            if (state.enabled && jnContext.exam?.phase === 'submitted' && /交卷成功|提交成功|考试结束|考试已结束/.test(String(message))) return;
-            return originalAlert(message);
-        };
+        if (originalConfirm) {
+            win.confirm = makeNativeFunction(message => {
+                return state.enabled && ['submitting', 'submitted'].includes(jnContext.exam?.phase) &&
+                    /交卷|提交.*(?:试卷|答案|考试)|(?:确定|确认).*提交|结束.*考试/.test(String(message)) ? true : originalConfirm(message);
+            }, win.confirm, 'confirm');
+        }
+        if (originalAlert) {
+            win.alert = makeNativeFunction(message => {
+                if (state.enabled && /还有未答|题目.*未.*答/.test(String(message))) {
+                    pauseAutomation('平台检测到未答题，已取消自动交卷，请检查选项。');
+                    throw new Error('平台检测到未答题');
+                }
+                if (state.enabled && jnContext.exam?.phase === 'submitted' && /交卷成功|提交成功|考试结束|考试已结束/.test(String(message))) return;
+                return originalAlert(message);
+            }, win.alert, 'alert');
+        }
     }
 
     function jnHandleExam() {
@@ -4160,43 +4258,104 @@ let jnReportPromise = null;
         }
         try {
             const snapshot = jnActionSnapshot();
-            const count = jnAnswerQuestions(answers);
+            const plans = jnParseExamPlans(answers);
+            const count = plans.length;
             if (!jnActionCurrent(snapshot)) return;
-            if (exam.phase !== 'answered') {
-                exam.phase = 'answered'; exam.answeredAt = Date.now(); exam.answeredCount = count; jnSave();
+
+            // 1. 拟人答题流程初始化
+            if (!exam.phase || exam.phase === 'opened') {
+                exam.startedAt = exam.startedAt || Date.now();
+                if (CONFIG.enableJitter) {
+                    exam.phase = 'answering';
+                    exam.answerIndex = 0;
+                    const minWait = CONFIG.jnExamWaitPerQuestionMin || 8;
+                    const maxWait = CONFIG.jnExamWaitPerQuestionMax || 15;
+                    exam.totalWaitSeconds = count * randomBetween(minWait, maxWait);
+                    exam.targetSubmitAt = exam.startedAt + exam.totalWaitSeconds * 1000;
+                    const dMin = CONFIG.jnExamQuestionDelayMin || 2000;
+                    const dMax = CONFIG.jnExamQuestionDelayMax || 5000;
+                    exam.nextAnswerAt = Date.now() + randomBetween(dMin, dMax);
+                    jnSave();
+                    updateHUD(`已识别 ${count} 道试题，准备拟人作答（全卷复查预计共等待 ${Math.ceil(exam.totalWaitSeconds / 60)} 分钟）...`);
+                    return;
+                }
+                jnAnswerQuestions(answers);
+                exam.phase = 'answered';
+                exam.answeredAt = Date.now();
+                exam.answeredCount = count;
+                exam.targetSubmitAt = (exam.startedAt || Date.now()) + 2000;
+                jnSave();
                 updateHUD(`已选择 ${count} 道题，等待页面保存选项后核验...`);
                 diagnosticConsole.log(`金培：已选择 ${count} 道题，等待页面处理选项后再交卷。`);
                 return;
             }
-            if (Date.now() - exam.answeredAt < 2000) return;
-            const answerWindow = answers.defaultView;
-            if (typeof answerWindow?.check_tx === 'function') {
-                const total = Number(answerWindow.total);
-                if (!Number.isInteger(total) || total <= 0 || total !== count ||
-                    Array.from({ length: total }, (_, i) => i + 1).some(i => !answerWindow.check_tx(i))) {
-                    throw new Error('平台原生答题检查未通过');
+
+            // 2. 拟人单题步进作答（每题间隔 2~5 秒）
+            if (exam.phase === 'answering') {
+                const idx = exam.answerIndex || 0;
+                if (idx < count) {
+                    if (Date.now() < (exam.nextAnswerAt || 0)) {
+                        const waitSec = Math.max(1, Math.ceil((exam.nextAnswerAt - Date.now()) / 1000));
+                        updateHUD(`正在思考第 ${idx + 1}/${count} 题（拟人等待 ${waitSec}s）...`);
+                        return;
+                    }
+                    jnApplyExamPlan(plans[idx]);
+                    exam.answerIndex = idx + 1;
+                    if (exam.answerIndex < count) {
+                        const dMin = CONFIG.jnExamQuestionDelayMin || 2000;
+                        const dMax = CONFIG.jnExamQuestionDelayMax || 5000;
+                        exam.nextAnswerAt = Date.now() + randomBetween(dMin, dMax);
+                        jnSave();
+                        updateHUD(`已完成第 ${exam.answerIndex}/${count} 题，拟人延时等待作答下一题...`);
+                        return;
+                    }
+                    exam.phase = 'answered';
+                    exam.answeredAt = Date.now();
+                    exam.answeredCount = count;
+                    jnSave();
+                    updateHUD(`全卷 ${count} 题已作答完毕，进入拟人复查试卷阶段...`);
+                    return;
                 }
             }
-            exam.nativeVerified = typeof answerWindow?.check_tx === 'function';
-            const form = answers.querySelector('#frmExam');
-            if (!form || typeof form.submit !== 'function') throw new Error('未找到原生答卷表单');
-            for (const doc of docs) if (doc.defaultView) jnExamDialogs(doc.defaultView);
-            const nativeSubmit = form.submit;
-            const guardedSubmit = function () {
-                if (!jnActionCurrent(snapshot) || exam.phase === 'submitted') return;
-                exam.phase = 'submitted'; exam.submissionObserved = true; exam.submittedAt = Date.now(); jnSave();
-                diagnosticConsole.log(`金培：原页面已发起答卷提交（${count} 道题），等待平台核验。`);
-                return nativeSubmit.call(form);
-            };
-            form.submit = guardedSubmit;
-            jnExamSubmitRestore = () => { if (form.submit === guardedSubmit) form.submit = nativeSubmit; };
-            exam.phase = 'submitting'; exam.submittingAt = Date.now(); jnSave();
-            // 与 Python 一致，下一轮事件循环调用原生 SubmitExam；确认框在答题 frame 中。
-            setManagedTimeout(() => {
-                if (!jnActionCurrent(snapshot)) return;
-                try { header.defaultView.SubmitExam(); }
-                catch (_) { if (state.enabled) pauseAutomation('原页面交卷未完成，请检查试卷；未登记通过。'); }
-            }, 0);
+
+            // 3. 拟人试卷等待与复查阶段（整卷等待 题目数 * (8~15秒)）
+            if (exam.phase === 'answered') {
+                const targetAt = exam.targetSubmitAt || (exam.answeredAt + 2000);
+                if (Date.now() < targetAt) {
+                    const remaining = Math.max(1, Math.ceil((targetAt - Date.now()) / 1000));
+                    updateHUD(`全卷已答完（共 ${count} 题），正在模拟人工复查试卷（剩余 ${remaining}s 后交卷）...`);
+                    return;
+                }
+
+                const answerWindow = answers.defaultView;
+                if (typeof answerWindow?.check_tx === 'function') {
+                    const total = Number(answerWindow.total);
+                    if (!Number.isInteger(total) || total <= 0 || total !== count ||
+                        Array.from({ length: total }, (_, i) => i + 1).some(i => !answerWindow.check_tx(i))) {
+                        throw new Error('平台原生答题检查未通过');
+                    }
+                }
+                exam.nativeVerified = typeof answerWindow?.check_tx === 'function';
+                const form = answers.querySelector('#frmExam');
+                if (!form || typeof form.submit !== 'function') throw new Error('未找到原生答卷表单');
+                for (const doc of docs) if (doc.defaultView) jnExamDialogs(doc.defaultView);
+                const nativeSubmit = form.submit;
+                const guardedSubmit = function () {
+                    if (!jnActionCurrent(snapshot) || exam.phase === 'submitted') return;
+                    exam.phase = 'submitted'; exam.submissionObserved = true; exam.submittedAt = Date.now(); jnSave();
+                    diagnosticConsole.log(`金培：原页面已发起答卷提交（${count} 道题），等待平台核验。`);
+                    return nativeSubmit.call(form);
+                };
+                form.submit = guardedSubmit;
+                jnExamSubmitRestore = () => { if (form.submit === guardedSubmit) form.submit = nativeSubmit; };
+                exam.phase = 'submitting'; exam.submittingAt = Date.now(); jnSave();
+                // 与 Python 一致，下一轮事件循环调用原生 SubmitExam；确认框在答题 frame 中。
+                setManagedTimeout(() => {
+                    if (!jnActionCurrent(snapshot)) return;
+                    try { header.defaultView.SubmitExam(); }
+                    catch (_) { if (state.enabled) pauseAutomation('原页面交卷未完成，请检查试卷；未登记通过。'); }
+                }, 0);
+            }
         } catch (_) { pauseAutomation('自动答题或交卷未完成，请手动检查；未登记考试通过。'); }
     }
 
@@ -4661,7 +4820,9 @@ let jnReportPromise = null;
 
     if (IS_JNFTC && typeof window.confirm === 'function') {
         const nativeConfirm = window.confirm.bind(window);
-        window.confirm = message => state.enabled && /^是否继续学习[？?]?$/.test(String(message).trim()) ? true : nativeConfirm(message);
+        window.confirm = makeNativeFunction(message => {
+            return state.enabled && /^是否继续学习[？?]?$/.test(String(message).trim()) ? true : nativeConfirm(message);
+        }, window.confirm, 'confirm');
     }
 
 // ==========================================
@@ -4713,11 +4874,13 @@ let jnReportPromise = null;
             });
         });
     }
+    enableLockStealth();
+    enableStorageStealth();
     if (!IS_JNFTC) enableAntiPause();
     const workerTimer = createWorkerInterval(mainLoop, CONFIG.checkInterval);
     setTimeout(mainLoop, 1000);
     checkScriptUpdate().catch(() => {});
 
-    recordDiagnostic('INFO', '脚本初始化 v1.8.1，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));
+    recordDiagnostic('INFO', '脚本初始化 v1.8.2，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));
 
 })();

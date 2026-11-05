@@ -47,9 +47,11 @@
             });
         });
     }
+    enableLockStealth();
+    enableStorageStealth();
     if (!IS_JNFTC) enableAntiPause();
     const workerTimer = createWorkerInterval(mainLoop, CONFIG.checkInterval);
     setTimeout(mainLoop, 1000);
     checkScriptUpdate().catch(() => {});
 
-    recordDiagnostic('INFO', '脚本初始化 v1.8.1，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));
+    recordDiagnostic('INFO', '脚本初始化 v1.8.2，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));

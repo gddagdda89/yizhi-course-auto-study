@@ -112,13 +112,13 @@
         return [...new Set(text.match(/[A-G01]/g))];
     }
 
-    function jnAnswerQuestions(doc) {
+    function jnParseExamPlans(doc) {
         const questions = Array.from(doc.querySelectorAll('.tb_title'));
         if (!questions.length) throw new Error('未找到可识别的考试题目');
         const indexes = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, '1': 0, '0': 1 };
         const seen = new Set();
         // 所有题目先校验，再操作选项；缺题、缺答案、未知题型均不会交卷。
-        const plans = questions.map((question, index) => {
+        return questions.map((question, index) => {
             const answer = question.querySelector('[id^="tmjo_"]') || doc.querySelector('#tmjo_' + (index + 1));
             const number = answer?.id?.match(/^tmjo_(\d+)$/)?.[1];
             if (!number || seen.has(number)) throw new Error('题目标识缺失或重复');
@@ -130,14 +130,25 @@
                 desired.length > 1 && options.some(option => option.type === 'radio')) throw new Error('题目选项不完整或题型不支持');
             return { options, desired };
         });
-        for (const { options, desired } of plans) {
-            for (const option of options) {
-                const expected = desired.includes(option.id);
-                if (option.checked !== expected && (expected || option.type === 'checkbox')) option.click();
+    }
+
+    function jnApplyExamPlan(plan) {
+        const { options, desired } = plan;
+        for (const option of options) {
+            const expected = desired.includes(option.id);
+            if (option.checked !== expected && (expected || option.type === 'checkbox')) {
+                simulateHumanClick(option);
             }
-            if (options.some(option => option.checked !== desired.includes(option.id))) throw new Error('选项未成功选中，已停止交卷');
         }
-        return questions.length;
+        if (options.some(option => option.checked !== desired.includes(option.id))) {
+            throw new Error('选项未成功选中，已停止交卷');
+        }
+    }
+
+    function jnAnswerQuestions(doc) {
+        const plans = jnParseExamPlans(doc);
+        for (const plan of plans) jnApplyExamPlan(plan);
+        return plans.length;
     }
 
     function jnStartExam(link) {
@@ -158,16 +169,22 @@
     function jnExamDialogs(win) {
         const originalConfirm = win.confirm?.bind(win);
         const originalAlert = win.alert?.bind(win);
-        if (originalConfirm) win.confirm = message => state.enabled && ['submitting', 'submitted'].includes(jnContext.exam?.phase) &&
-            /交卷|提交.*(?:试卷|答案|考试)|(?:确定|确认).*提交|结束.*考试/.test(String(message)) ? true : originalConfirm(message);
-        if (originalAlert) win.alert = message => {
-            if (state.enabled && /还有未答|题目.*未.*答/.test(String(message))) {
-                pauseAutomation('平台检测到未答题，已取消自动交卷，请检查选项。');
-                throw new Error('平台检测到未答题');
-            }
-            if (state.enabled && jnContext.exam?.phase === 'submitted' && /交卷成功|提交成功|考试结束|考试已结束/.test(String(message))) return;
-            return originalAlert(message);
-        };
+        if (originalConfirm) {
+            win.confirm = makeNativeFunction(message => {
+                return state.enabled && ['submitting', 'submitted'].includes(jnContext.exam?.phase) &&
+                    /交卷|提交.*(?:试卷|答案|考试)|(?:确定|确认).*提交|结束.*考试/.test(String(message)) ? true : originalConfirm(message);
+            }, win.confirm, 'confirm');
+        }
+        if (originalAlert) {
+            win.alert = makeNativeFunction(message => {
+                if (state.enabled && /还有未答|题目.*未.*答/.test(String(message))) {
+                    pauseAutomation('平台检测到未答题，已取消自动交卷，请检查选项。');
+                    throw new Error('平台检测到未答题');
+                }
+                if (state.enabled && jnContext.exam?.phase === 'submitted' && /交卷成功|提交成功|考试结束|考试已结束/.test(String(message))) return;
+                return originalAlert(message);
+            }, win.alert, 'alert');
+        }
     }
 
     function jnHandleExam() {
@@ -194,43 +211,104 @@
         }
         try {
             const snapshot = jnActionSnapshot();
-            const count = jnAnswerQuestions(answers);
+            const plans = jnParseExamPlans(answers);
+            const count = plans.length;
             if (!jnActionCurrent(snapshot)) return;
-            if (exam.phase !== 'answered') {
-                exam.phase = 'answered'; exam.answeredAt = Date.now(); exam.answeredCount = count; jnSave();
+
+            // 1. 拟人答题流程初始化
+            if (!exam.phase || exam.phase === 'opened') {
+                exam.startedAt = exam.startedAt || Date.now();
+                if (CONFIG.enableJitter) {
+                    exam.phase = 'answering';
+                    exam.answerIndex = 0;
+                    const minWait = CONFIG.jnExamWaitPerQuestionMin || 8;
+                    const maxWait = CONFIG.jnExamWaitPerQuestionMax || 15;
+                    exam.totalWaitSeconds = count * randomBetween(minWait, maxWait);
+                    exam.targetSubmitAt = exam.startedAt + exam.totalWaitSeconds * 1000;
+                    const dMin = CONFIG.jnExamQuestionDelayMin || 2000;
+                    const dMax = CONFIG.jnExamQuestionDelayMax || 5000;
+                    exam.nextAnswerAt = Date.now() + randomBetween(dMin, dMax);
+                    jnSave();
+                    updateHUD(`已识别 ${count} 道试题，准备拟人作答（全卷复查预计共等待 ${Math.ceil(exam.totalWaitSeconds / 60)} 分钟）...`);
+                    return;
+                }
+                jnAnswerQuestions(answers);
+                exam.phase = 'answered';
+                exam.answeredAt = Date.now();
+                exam.answeredCount = count;
+                exam.targetSubmitAt = (exam.startedAt || Date.now()) + 2000;
+                jnSave();
                 updateHUD(`已选择 ${count} 道题，等待页面保存选项后核验...`);
                 diagnosticConsole.log(`金培：已选择 ${count} 道题，等待页面处理选项后再交卷。`);
                 return;
             }
-            if (Date.now() - exam.answeredAt < 2000) return;
-            const answerWindow = answers.defaultView;
-            if (typeof answerWindow?.check_tx === 'function') {
-                const total = Number(answerWindow.total);
-                if (!Number.isInteger(total) || total <= 0 || total !== count ||
-                    Array.from({ length: total }, (_, i) => i + 1).some(i => !answerWindow.check_tx(i))) {
-                    throw new Error('平台原生答题检查未通过');
+
+            // 2. 拟人单题步进作答（每题间隔 2~5 秒）
+            if (exam.phase === 'answering') {
+                const idx = exam.answerIndex || 0;
+                if (idx < count) {
+                    if (Date.now() < (exam.nextAnswerAt || 0)) {
+                        const waitSec = Math.max(1, Math.ceil((exam.nextAnswerAt - Date.now()) / 1000));
+                        updateHUD(`正在思考第 ${idx + 1}/${count} 题（拟人等待 ${waitSec}s）...`);
+                        return;
+                    }
+                    jnApplyExamPlan(plans[idx]);
+                    exam.answerIndex = idx + 1;
+                    if (exam.answerIndex < count) {
+                        const dMin = CONFIG.jnExamQuestionDelayMin || 2000;
+                        const dMax = CONFIG.jnExamQuestionDelayMax || 5000;
+                        exam.nextAnswerAt = Date.now() + randomBetween(dMin, dMax);
+                        jnSave();
+                        updateHUD(`已完成第 ${exam.answerIndex}/${count} 题，拟人延时等待作答下一题...`);
+                        return;
+                    }
+                    exam.phase = 'answered';
+                    exam.answeredAt = Date.now();
+                    exam.answeredCount = count;
+                    jnSave();
+                    updateHUD(`全卷 ${count} 题已作答完毕，进入拟人复查试卷阶段...`);
+                    return;
                 }
             }
-            exam.nativeVerified = typeof answerWindow?.check_tx === 'function';
-            const form = answers.querySelector('#frmExam');
-            if (!form || typeof form.submit !== 'function') throw new Error('未找到原生答卷表单');
-            for (const doc of docs) if (doc.defaultView) jnExamDialogs(doc.defaultView);
-            const nativeSubmit = form.submit;
-            const guardedSubmit = function () {
-                if (!jnActionCurrent(snapshot) || exam.phase === 'submitted') return;
-                exam.phase = 'submitted'; exam.submissionObserved = true; exam.submittedAt = Date.now(); jnSave();
-                diagnosticConsole.log(`金培：原页面已发起答卷提交（${count} 道题），等待平台核验。`);
-                return nativeSubmit.call(form);
-            };
-            form.submit = guardedSubmit;
-            jnExamSubmitRestore = () => { if (form.submit === guardedSubmit) form.submit = nativeSubmit; };
-            exam.phase = 'submitting'; exam.submittingAt = Date.now(); jnSave();
-            // 与 Python 一致，下一轮事件循环调用原生 SubmitExam；确认框在答题 frame 中。
-            setManagedTimeout(() => {
-                if (!jnActionCurrent(snapshot)) return;
-                try { header.defaultView.SubmitExam(); }
-                catch (_) { if (state.enabled) pauseAutomation('原页面交卷未完成，请检查试卷；未登记通过。'); }
-            }, 0);
+
+            // 3. 拟人试卷等待与复查阶段（整卷等待 题目数 * (8~15秒)）
+            if (exam.phase === 'answered') {
+                const targetAt = exam.targetSubmitAt || (exam.answeredAt + 2000);
+                if (Date.now() < targetAt) {
+                    const remaining = Math.max(1, Math.ceil((targetAt - Date.now()) / 1000));
+                    updateHUD(`全卷已答完（共 ${count} 题），正在模拟人工复查试卷（剩余 ${remaining}s 后交卷）...`);
+                    return;
+                }
+
+                const answerWindow = answers.defaultView;
+                if (typeof answerWindow?.check_tx === 'function') {
+                    const total = Number(answerWindow.total);
+                    if (!Number.isInteger(total) || total <= 0 || total !== count ||
+                        Array.from({ length: total }, (_, i) => i + 1).some(i => !answerWindow.check_tx(i))) {
+                        throw new Error('平台原生答题检查未通过');
+                    }
+                }
+                exam.nativeVerified = typeof answerWindow?.check_tx === 'function';
+                const form = answers.querySelector('#frmExam');
+                if (!form || typeof form.submit !== 'function') throw new Error('未找到原生答卷表单');
+                for (const doc of docs) if (doc.defaultView) jnExamDialogs(doc.defaultView);
+                const nativeSubmit = form.submit;
+                const guardedSubmit = function () {
+                    if (!jnActionCurrent(snapshot) || exam.phase === 'submitted') return;
+                    exam.phase = 'submitted'; exam.submissionObserved = true; exam.submittedAt = Date.now(); jnSave();
+                    diagnosticConsole.log(`金培：原页面已发起答卷提交（${count} 道题），等待平台核验。`);
+                    return nativeSubmit.call(form);
+                };
+                form.submit = guardedSubmit;
+                jnExamSubmitRestore = () => { if (form.submit === guardedSubmit) form.submit = nativeSubmit; };
+                exam.phase = 'submitting'; exam.submittingAt = Date.now(); jnSave();
+                // 与 Python 一致，下一轮事件循环调用原生 SubmitExam；确认框在答题 frame 中。
+                setManagedTimeout(() => {
+                    if (!jnActionCurrent(snapshot)) return;
+                    try { header.defaultView.SubmitExam(); }
+                    catch (_) { if (state.enabled) pauseAutomation('原页面交卷未完成，请检查试卷；未登记通过。'); }
+                }, 0);
+            }
         } catch (_) { pauseAutomation('自动答题或交卷未完成，请手动检查；未登记考试通过。'); }
     }
 

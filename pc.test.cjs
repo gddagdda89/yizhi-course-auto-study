@@ -81,7 +81,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { jnSubmitRating, jnReportStudyTime, jnParseAnswers, jnAnswerQuestions, jnStartExam, jnHandleExam, syncAccountContext, readAccountIdentity, detectPlatform, jnRoot, jnUrl, jnReadTasks, jnReadVideos, jnHandleDuty, jnHandleCourse, jnHandlePlayer, handleJnPlatform, pauseJnPlayback, setJnContext: value => { jnContext = value; jnSave(); }, getJnContext: () => jnContext, isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { makeNativeFunction, enableLockStealth, enableStorageStealth, jnParseExamPlans, jnApplyExamPlan, jnSubmitRating, jnReportStudyTime, jnParseAnswers, jnAnswerQuestions, jnStartExam, jnHandleExam, syncAccountContext, readAccountIdentity, detectPlatform, jnRoot, jnUrl, jnReadTasks, jnReadVideos, jnHandleDuty, jnHandleCourse, jnHandlePlayer, handleJnPlatform, pauseJnPlayback, setJnContext: value => { jnContext = value; jnSave(); }, getJnContext: () => jnContext, isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -593,6 +593,96 @@ test('只调用SubmitExam但未真正提交原生表单时，不记录已交卷�
     assert.equal(t.getJnContext().exam.submissionObserved, undefined);
     t.advance(16000); t.jnHandleExam();
     assert.equal(t.state.enabled, false); assert.match(t.context.location.href, /ExamMain/);
+});
+
+test('金培考试开启拟人抖动时，按题步进间隔作答且总等待时间符合题目数要求', () => {
+    const t = setupJn('/WebTraining14/Web/MyExam/aspNet/ExamMain.aspx');
+    t.CONFIG.jnAutoExam = true;
+    t.CONFIG.enableJitter = true;
+    t.CONFIG.jnExamQuestionDelayMin = 2000;
+    t.CONFIG.jnExamQuestionDelayMax = 5000;
+    t.CONFIG.jnExamWaitPerQuestionMin = 8;
+    t.CONFIG.jnExamWaitPerQuestionMax = 15;
+    t.setJnContext({
+        courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1',
+        exam: { id: 'exam-1', phase: 'opened', startedAt: 0 }
+    });
+    const fixture = jnExamFixture();
+    let submitted = 0;
+    const form = { submit() { submitted++; } };
+    fixture.doc.querySelector = selector => selector === '#frmExam' ? form : null;
+    fixture.doc.defaultView = {
+        total: 3,
+        check_tx: number => fixture.optionsByNumber.get(String(number)).some(o => o.checked),
+        confirm: () => true
+    };
+    const header = {
+        querySelectorAll: () => [],
+        defaultView: {
+            SubmitExam() { form.submit(); }
+        }
+    };
+    t.collections.set('iframe,frame', [{ contentDocument: fixture.doc }, { contentDocument: header }]);
+
+    // 第1次：进入 answering 状态并设定总等待（3题 * 8~15秒 = 24~45秒）
+    t.jnHandleExam();
+    const exam = t.getJnContext().exam;
+    assert.equal(exam.phase, 'answering');
+    assert.equal(exam.answerIndex, 0);
+    assert.ok(exam.totalWaitSeconds >= 24 && exam.totalWaitSeconds <= 45);
+
+    // 步进作答第1题
+    t.advance(5500);
+    t.jnHandleExam();
+    assert.equal(t.getJnContext().exam.answerIndex, 1);
+    assert.equal(fixture.optionsByNumber.get('1').some(o => o.checked), true);
+
+    // 步进作答第2题
+    t.advance(5500);
+    t.jnHandleExam();
+    assert.equal(t.getJnContext().exam.answerIndex, 2);
+
+    // 步进作答第3题
+    t.advance(5500);
+    t.jnHandleExam();
+    assert.equal(t.getJnContext().exam.phase, 'answered');
+
+    // 处于拟人复查等待，未达总时长不提交
+    t.advance(1000);
+    t.jnHandleExam();
+    assert.equal(submitted, 0);
+
+    // 达到总时长后提交
+    t.advance(exam.totalWaitSeconds * 1000);
+    t.jnHandleExam();
+    t.advance(0);
+    assert.equal(submitted, 1);
+    assert.equal(t.getJnContext().exam.phase, 'submitted');
+});
+
+test('防检测原生函数伪装：重写函数 toString 和原型链完全符合原生特征', () => {
+    const t = setup();
+    const dummy = function myNative() {};
+    const hooked = t.makeNativeFunction(function () { return 'ok'; }, dummy, 'myNative');
+    assert.equal(hooked(), 'ok');
+    assert.equal(hooked.name, 'myNative');
+    assert.equal(hooked.toString(), 'function myNative() { [native code] }');
+    assert.equal(hooked.toString.name, 'toString');
+});
+
+test('防检测跨标签锁与存储脱敏隐藏：query 过滤内部锁标识', async () => {
+    const t = setup();
+    const queryResult = {
+        held: [{ name: '_kme_course_1' }, { name: 'other_user_lock' }],
+        pending: [{ name: 'jinpei_lock' }]
+    };
+    t.context.navigator.locks = {
+        query: async () => queryResult
+    };
+    t.enableLockStealth();
+    const result = await t.context.navigator.locks.query();
+    assert.deepEqual(result.held, [{ name: 'other_user_lock' }]);
+    assert.deepEqual(result.pending, []);
 });
 
 test('首次识别账号清除未归属的旧进度，保留平台登录和界面偏好', () => {

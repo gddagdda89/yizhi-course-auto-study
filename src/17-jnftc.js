@@ -362,5 +362,7 @@
 
     if (IS_JNFTC && typeof window.confirm === 'function') {
         const nativeConfirm = window.confirm.bind(window);
-        window.confirm = message => state.enabled && /^是否继续学习[？?]?$/.test(String(message).trim()) ? true : nativeConfirm(message);
+        window.confirm = makeNativeFunction(message => {
+            return state.enabled && /^是否继续学习[？?]?$/.test(String(message).trim()) ? true : nativeConfirm(message);
+        }, window.confirm, 'confirm');
     }

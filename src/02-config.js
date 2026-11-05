@@ -1,4 +1,4 @@
-    const SCRIPT_VERSION = '1.8.1';
+    const SCRIPT_VERSION = '1.8.2';
 
     function detectPlatform(url) {
         return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
@@ -7,7 +7,7 @@
     const IS_JNFTC = PLATFORM === 'jnftc';
     const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.1】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.2】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -25,6 +25,10 @@
         autoMute: true,           // 自动静音播放
         jnAutoReport: true,       // 金培：移植 Python 的课件时长提交，随后返回课程核验
         jnAutoExam: true,         // 金培：识别页面现成答案并交卷；不支持的题型暂停
+        jnExamQuestionDelayMin: 2000, // 金培：每题拟人作答最小间隔 (2 秒)
+        jnExamQuestionDelayMax: 5000, // 金培：每题拟人作答最大间隔 (5 秒)
+        jnExamWaitPerQuestionMin: 8,  // 金培：整套试卷每题拟人交卷等待最小秒数 (8 秒/题)
+        jnExamWaitPerQuestionMax: 15, // 金培：整套试卷每题拟人交卷等待最大秒数 (15 秒/题)
         playbackRate: 1.0,        // 正常播放速度
         debugPlayback: false,    // 排查播放问题时开启详细事件日志，日常使用关闭
         enableJitter: typeof navigator !== 'undefined', // 浏览器真实环境下开启拟人随机时间抖动
