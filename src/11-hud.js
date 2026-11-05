@@ -87,7 +87,7 @@
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.1</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.0</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -98,6 +98,7 @@
 
             <!-- 主体内容卡片 -->
             <div id="jinpei-hud-body" style="display: ${isCollapsed ? 'none' : 'block'}; padding: 12px 14px 14px 14px;">
+                <div style="font-size:11px;color:#64748b;margin-bottom:8px;">当前平台：${PLATFORM_NAME}</div>
                 <!-- 快捷启动/暂停按键 -->
                 <button id="jinpei-toggle-btn" class="jinpei-btn-action" style="
                     width: 100%;
@@ -534,6 +535,14 @@
         const decBtn = getHUDElement('jinpei-concurrency-dec');
         const incBtn = getHUDElement('jinpei-concurrency-inc');
         const openTabBtn = getHUDElement('jinpei-open-tab-btn');
+
+        if (IS_JNFTC) {
+            // 金培按任务顺序流转；复用面板，避免把易知的多窗口规则用于旧平台。
+            for (const button of [decBtn, incBtn, openTabBtn]) {
+                if (button) { button.disabled = true; button.title = '江南金培使用单窗口顺序学习'; }
+            }
+            setConcurrencySetting(1);
+        }
 
         if (decBtn && typeof decBtn.addEventListener === 'function') {
             decBtn.addEventListener('click', (e) => {

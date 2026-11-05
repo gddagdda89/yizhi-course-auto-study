@@ -25,7 +25,7 @@
             if (typeof value === 'string') return value;
             try { return JSON.stringify(value) ?? String(value); } catch (_) { return String(value); }
         }).join(' ').slice(0, 1200);
-        diagnosticLogs.push({ time: Date.now(), level, tab: TAB_ID, message,
+        diagnosticLogs.push({ time: Date.now(), level, tab: TAB_ID, message, platform: PLATFORM_NAME,
             task: state.currentTask, course: state.currentCourse, sub: state.currentSubVideo,
             syncRetry: state.syncRetryCount, route: location.href.split(/[?#]/)[0].replace(/^https?:\/\/[^/]+/, '') });
         diagnosticLogs = diagnosticLogs.slice(-DIAGNOSTIC_LIMIT);
@@ -48,7 +48,7 @@
     function formatDiagnosticLogs() {
         return '神奇海螺诊断日志\n' + diagnosticLogs.map(entry =>
             `[${formatLogTimestamp(entry.time)}] [${entry.level}] [${entry.tab}] ${entry.message}\n` +
-            `  任务=${entry.task || '-'} 课程=${entry.course || '-'} 小节=${entry.sub || '-'} 同步重试=${entry.syncRetry || 0} 页面=${entry.route || '-'}`
+            `  平台=${entry.platform || '易知'} 任务=${entry.task || '-'} 课程=${entry.course || '-'} 小节=${entry.sub || '-'} 同步重试=${entry.syncRetry || 0} 页面=${entry.route || '-'}`
         ).join('\n');
     }
 
@@ -264,6 +264,7 @@
 
         const video = document.querySelector('video');
         if (video && !video.paused) video.pause();
+        if (IS_JNFTC) pauseJnPlayback();
 
         const icon = getHUDElement('jinpei-btn-icon');
         const text = getHUDElement('jinpei-btn-text');

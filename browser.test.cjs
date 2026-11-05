@@ -22,6 +22,15 @@ async function run() {
     const server = http.createServer((_req, res) => {
         if (_req.url.startsWith('/tail.wav')) { res.setHeader('Content-Type', 'audio/wav'); res.end(wav); return; }
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        if (_req.url.startsWith('/WebTraining14/Web/MyDuty/MyDutyList.aspx')) {
+            const second = _req.method === 'POST';
+            const id = second ? 'task-b' : 'task-a';
+            res.end('<html><body><form><input type="hidden" name="__VIEWSTATE" value="fixture">' +
+                '<div id="lblCurrDuty"><div><div>金培任务' + id + '<a href="DutyShow.aspx?DutyId=' + id + '"></a></div></div></div>' +
+                '<span id="PageSplit1_LbPageIndex">' + (second ? '2' : '1') + '</span><span id="PageSplit1_LbPageCount">2</span>' +
+                '<a id="PageSplit1_BtnNext" href="javascript:__doPostBack(\'PageSplit1$BtnNext\',\'\')">下一页</a></form></body></html>');
+            return;
+        }
         res.end('<!doctype html><html><body><main id="fixture"></main></body></html>');
     });
     let child;
@@ -67,6 +76,7 @@ async function run() {
         await evaluate(`document.getElementById('fixture').innerHTML = '<div class="group cursor-pointer" data-tp-id="11">地图一<br>学习地图 进行中</div><div class="group cursor-pointer" data-tp-id="12">地图二<br>学习地图 进行中</div>';document.querySelectorAll('[data-tp-id]').forEach(el=>{el.dataset.clicks='0';el.addEventListener('click',()=>{el.dataset.clicks=String(Number(el.dataset.clicks)+1);});});`);
         let source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
         source = source.replace('    setInterval(mainLoop, CONFIG.checkInterval);', '').replace('    setTimeout(mainLoop, 1000);', '');
+        source = source.replace('const workerTimer = createWorkerInterval(mainLoop, CONFIG.checkInterval);', "const workerTimer = {type:'test'};");
         source = source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter=false;CONFIG.debugPlayback=true;window.testApi={state,mainLoop,pauseAutomation,getTaskSelection,getSubVideoKey,getCurrentCourseId,switchToNextSubVideoOrCourse,handleMyTaskPage,saveTaskSelection,setConcurrencySetting,observeVideoPlayback,handleVideoPlayback,formatDiagnosticLogs,hasPlaybackCompletion,isItemCompleted,getCourseOutcomes};})();');
         await evaluate(source);
         await evaluate("testApi.mainLoop();document.getElementById('_kme_tool_host').shadowRoot.querySelectorAll('#jinpei-task-list input')[0].click()");
@@ -178,7 +188,36 @@ async function run() {
                 await peerEvaluate('({url:location.href,state:testApi.state,selection:testApi.getTaskSelection()})'));
         }
         assert.deepEqual(assignments.sort((a, b) => b[0] - a[0]), [[1, 0], [0, 1]]);
+        await evaluate("testApi.pauseAutomation('switch fixture')");
+        await peerEvaluate("testApi.pauseAutomation('switch fixture')");
+        await call('Page.navigate', { url: 'http://127.0.0.1:' + server.address().port + '/WebTraining14/Website/Index.aspx' });
+        for (let tries = 0; tries < 50 && !await evaluate("location.pathname.includes('WebTraining14')&&!!document.getElementById('fixture')"); tries++) await delay(100);
+        const jnSource = source.replace('const PLATFORM = detectPlatform(location.href);', "const PLATFORM = 'jnftc';")
+            .replace('getCourseOutcomes};', 'getCourseOutcomes,loadJnTaskCatalog,getTaskCatalog,jnReadVideos,jnHandlePlayer,getJnProgress:()=>jnProgress};');
+        await evaluate(jnSource);
+        await evaluate('testApi.mainLoop();testApi.loadJnTaskCatalog(true)');
+        assert.equal(await evaluate('testApi.getTaskCatalog().length'), 2);
+        await evaluate('testApi.mainLoop()');
+        assert.equal(await evaluate("document.getElementById('_kme_tool_host').shadowRoot.textContent.includes('当前平台：江南金培')"), true);
+        assert.equal(await evaluate("document.getElementById('_kme_tool_host').shadowRoot.getElementById('jinpei-open-tab-btn').disabled"), true);
+        assert.equal(await evaluate("document.getElementById('_kme_tool_host').shadowRoot.querySelectorAll('#jinpei-task-list input').length"), 2);
+        assert.equal(await evaluate('testApi.state.enabled'), false);
+        await call('Page.bringToFront');
+        await evaluate(`
+            history.pushState({},'', '/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+            document.getElementById('fixture').innerHTML='<input id="txtLoginInfoId"><video muted src="/tail.wav"></video>';
+            window.jnVideo=document.querySelector('video');
+            jnVideo.addEventListener('ended',()=>{jnVideo.currentTime=0;});
+            testApi.state.enabled=true;testApi.jnHandlePlayer();
+        `);
+        for (let tries = 0; tries < 50 && !await evaluate('!!testApi.getJnProgress()?.endedAt'); tries++) await delay(100);
+        if (!await evaluate('!!testApi.getJnProgress()?.endedAt')) console.log('JNFTC playback diagnostics:', await evaluate('({paused:jnVideo.paused,readyState:jnVideo.readyState,currentTime:jnVideo.currentTime,error:jnVideo.error?.message,state:testApi.state.statusText,progress:testApi.getJnProgress(),logs:testApi.formatDiagnosticLogs()})'));
+        assert.equal(await evaluate('!!testApi.getJnProgress().endedAt'), true);
+        await evaluate('testApi.jnHandlePlayer()');
+        assert.match(await evaluate('testApi.state.statusText'), /等待平台同步/);
+        await evaluate("testApi.pauseAutomation('jnftc fixture finished')");
         console.log('Chrome passed: native ended reset and automatic next-section, strict completion markers, delayed chapter loading, task selector, single clicks, and cross-map scheduling with native Web Locks.');
+        console.log('JNFTC Chrome passed: platform HUD, manual login wait, task pagination and selection, sequential controls, and native ended reset handling.');
     } finally {
         if (call && ws?.readyState === WebSocket.OPEN) await call('Browser.close').catch(() => {});
         ws?.close();

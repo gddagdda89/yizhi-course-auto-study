@@ -65,13 +65,13 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
         }
     }
     const context = {
-        Document, document: new Document(), window: {
+        URL, URLSearchParams, AbortController, Document, document: new Document(), window: {
             addEventListener() {},
             open(url) { openedUrls.push(url); return { closed: false }; },
             close() { this.closed = true; },
             closed: false
         },
-        location: { href: 'https://pc.kmelearning.com/home/training/study/1', reloads: 0, reload() { this.reloads++; } },
+        location: { href: shared.url || 'https://pc.kmelearning.com/home/training/study/1', reloads: 0, reload() { this.reloads++; } },
         sessionStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
         navigator: { locks: shared.locks || createLockManager() },
         localStorage: { get length() { return localStorageMap.size; }, key: index => [...localStorageMap.keys()][index] ?? null, getItem: key => localStorageMap.get(key) ?? null, setItem: (key, value) => localStorageMap.set(key, value), removeItem: key => localStorageMap.delete(key) },
@@ -81,7 +81,7 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
     };
     vm.createContext(context);
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'CONFIG.enableJitter = false; CONFIG.debugPlayback = true; window.testApi = { syncAccountContext, readAccountIdentity, detectPlatform, jnRoot, jnUrl, jnReadTasks, jnReadVideos, jnHandleDuty, jnHandleCourse, jnHandlePlayer, handleJnPlatform, pauseJnPlayback, setJnContext: value => { jnContext = value; jnSave(); }, getJnContext: () => jnContext, isItemCompleted, getAllSubVideoItems, replayVideoTail, state, switchToNextSubVideoOrCourse, mainLoop, pauseAutomation, calculateCourseTotalProgress, detectCourseExam, getHandledCourses, markCourseHandled, isCourseHandled, getHandledMaps, markMapHandled, getCourseItems, autoDismissDialogs, updateHUD, simulateHumanClick, randomBetween, setManagedTimeout, STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem, CONFIG, checkWatchdog, getWatchdogState, setWatchdogState, clearWatchdogState, markSubVideoFailed, isSubVideoFailed, getFailedSubVideos, watchdogRuntime, getConcurrencySetting, setConcurrencySetting, getActiveTabs, registerTabHeartbeat, unregisterTab, isCourseBusyByOtherTab, tryClaimCourseSlot, TAB_ID, waitForPageReady, recordDiagnostic, observeVideoPlayback, formatDiagnosticLogs, clearDiagnosticLogs, copyDiagnosticLogs, getCourseOutcomes, saveCourseOutcome, getCourseDisposition, getPlatformEntityId, getCurrentCourseId, getSubVideoKey, getCourseKeyFromItem, getTaskIdFromCard, getTaskSelection, saveTaskSelection, getTaskCatalog, saveTaskCatalog, loadTaskCatalog, pickNextTask, spawnTaskWorker, isTaskKeySelected, handleMyTaskPage, retrySkippedCourses, reconcileBeforeReplay, readPlatformLearningRecord, directoryDurationSeconds, createWorkerInterval, checkScriptUpdate, semverCompare }; })();'), context);
     timers.clear(); // 初始化主循环由测试显式调用。
     function advance(ms) {
         const end = now + ms;
@@ -96,6 +96,219 @@ function setup(initialStorage = [], initialLocalStorage = [], shared = {}) {
 }
 
 const settleLocks = () => new Promise(resolve => setImmediate(resolve));
+
+function setupJn(pathname = '/WebTraining14/Website/Index.aspx') {
+    const t = setup([], [], { url: 'https://jnftc.jnbank.com.cn' + pathname });
+    const elements = new Map();
+    const collections = new Map();
+    const originalOne = t.context.document.querySelector.bind(t.context.document);
+    const originalAll = t.context.document.querySelectorAll.bind(t.context.document);
+    t.context.document.querySelector = selector => elements.has(selector) ? elements.get(selector) : selector === 'video,audio' ? t.fixture.video : originalOne(selector);
+    t.context.document.querySelectorAll = selector => collections.has(selector) ? collections.get(selector) : originalAll(selector);
+    const events = new Map();
+    t.fixture.video.addEventListener = (type, listener) => events.set(type, listener);
+    collections.set('video,audio', [t.fixture.video]);
+    return { ...t, elements, collections, events };
+}
+
+test('金培按完整域名识别，与易知流程隔离且兼容新旧站点根路径', () => {
+    const t = setupJn();
+    assert.equal(t.detectPlatform(t.context.location.href), 'jnftc');
+    assert.equal(t.detectPlatform('https://jnftc.jnbank.com.cn.evil.test/'), 'yizhi');
+    assert.equal(t.jnRoot(), '/WebTraining14');
+    assert.equal(t.jnRoot('https://jnftc.jnbank.com.cn/WebTraining/Web/a'), '/WebTraining');
+    assert.equal(t.jnUrl('javascript:alert(1)'), '');
+    assert.equal(t.jnUrl('https://other.test/WebTraining14/Web/a'), '');
+    assert.equal(t.jnUrl('/WebTraining14/Website/Index.aspx'), '');
+});
+
+test('金培游客只等待手动登录，登录后自动去对应站点任务页', async () => {
+    const t = setupJn();
+    t.state.enabled = true; // 用户在游客页点击开始，等待其手动登录。
+    await t.handleJnPlatform();
+    assert.match(t.state.statusText, /等待你手动登录/);
+    assert.equal(t.state.enabled, true);
+    assert.match(t.context.location.href, /Website\/Index/);
+    t.elements.set('#Top1_lbtnLogout,#Top1_BtnLogOut,.theme-login2,#lblCurrDuty,#tbCurTabIndex,#txtLoginInfoId,.a-2', {});
+    await t.handleJnPlatform();
+    assert.equal(t.context.location.href, 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyDuty/MyDutyList.aspx?Menu=9');
+});
+
+test('金培已登录但未启动时清除过期的等待登录提示，不自动跳转', async () => {
+    const t = setupJn();
+    t.state.enabled = false; t.state.statusText = '江南金培：等待你手动登录，登录后继续。';
+    t.elements.set('[id$="_BtnLogOut"],[id$="_lbtnLogout"]', {});
+    await t.handleJnPlatform();
+    assert.match(t.state.statusText, /已登录江南金培/);
+    assert.match(t.context.location.href, /Website\/Index/);
+});
+
+test('金培只解析课件参数，不执行 onclick，中文路径使用平台编码', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1');
+    const link = { getAttribute: () => "Online('ware-1','课程/一.mp4','1','course-1')", closest: () => ({ querySelector: () => ({ textContent: '第一讲' }) }) };
+    t.collections.set('#table a[onclick]', [link, { ...link, getAttribute: () => "alert('fake')" }]);
+    const videos = t.jnReadVideos();
+    assert.equal(videos.length, 1);
+    assert.equal(videos[0].id, 'ware-1');
+    assert.ok(videos[0].url.includes('Url=%u8BFE%u7A0B/%u4E00.mp4'));
+    assert.equal(videos[0].title, '第一讲');
+});
+
+test('金培任务使用 DutyId，任务链接不允许跨域', () => {
+    const t = setupJn();
+    const card = { textContent: '学习地图', querySelector: () => ({ getAttribute: () => 'DutyShow.aspx?DutyId=task-1' }) };
+    t.collections.set('#lblCurrDuty > div > div', [card]);
+    assert.equal(t.jnReadTasks(t.context.document, 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyDuty/MyDutyList.aspx')[0].key, 'task-1');
+    card.querySelector = () => ({ getAttribute: () => 'https://other.test/DutyShow.aspx?DutyId=task-2' });
+    assert.equal(t.jnReadTasks(t.context.document, t.context.location.href).length, 0);
+});
+
+test('金培先检查在学再检查未学，不用进度数字推断全部完成', () => {
+    const t = setupJn('/WebTraining14/Web/MyDuty/DutyShow.aspx?DutyId=task-1');
+    let submitted = 0;
+    const input = { value: '0', form: { submit() { submitted++; } } };
+    t.elements.set('#tbCurTabIndex', input);
+    t.elements.set('#ul-1', {}); t.elements.set('#ul-2', {});
+    t.jnHandleDuty();
+    assert.equal(submitted, 1);
+    assert.equal(input.value, '1');
+    assert.equal(t.getHandledMaps().includes('task-1'), false);
+    t.state.isActionPending = false;
+    t.jnHandleDuty();
+    assert.equal(t.getHandledMaps().includes('task-1'), true);
+    assert.match(t.context.location.href, /MyDutyList/);
+});
+
+test('金培平台明确确认课程完成才返回任务，考试评价待人工处理', () => {
+    const path = '/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1';
+    const t = setupJn(path);
+    t.setJnContext({ dutyUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyDuty/DutyShow.aspx?DutyId=task-1' });
+    t.elements.set('.a-4', { getAttribute: () => "background-image:url('../images/CourseOver.png')" });
+    t.jnHandleCourse();
+    assert.match(t.context.location.href, /DutyShow/);
+    const pending = setupJn(path);
+    pending.elements.set('.a-2', { getAttribute: () => 'ico_kecheng_t3_over.png' });
+    pending.elements.set('a[onclick*="CreateExam"]', {});
+    pending.jnHandleCourse();
+    assert.equal(pending.state.enabled, false);
+    assert.match(pending.state.statusText, /手动考试/);
+    assert.equal(pending.getHandledMaps().length, 0);
+});
+
+test('金培播放结束等待平台最后一次上报，确认后返回详情并推进课件队列', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    t.setJnContext({ queue: [{ id: 'ware-1', title: '第一讲' }], index: 0,
+        courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1' });
+    t.advance(1000);
+    t.fixture.video.ended = true;
+    t.jnHandlePlayer();
+    t.advance(6000);
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /OnLineRead/);
+    t.context.performance = { timeOrigin: 0, getEntriesByType: () => [{ name: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/SetTime.ashx?x=1', startTime: 2000 }] };
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /Layer_CourseInfo/);
+    assert.equal(t.getJnContext().index, 1);
+});
+
+test('金培上报超时、播放器加载超时有限暂停，不误标完成', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    t.advance(1000); t.fixture.video.ended = true; t.jnHandlePlayer();
+    t.advance(76000); t.jnHandlePlayer();
+    assert.equal(t.state.enabled, false);
+    assert.match(t.state.statusText, /最后一次学习时间提交/);
+    const missing = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx');
+    missing.fixture.video = null;
+    missing.jnHandlePlayer(); missing.advance(61000); missing.jnHandlePlayer();
+    assert.equal(missing.state.enabled, false);
+    assert.match(missing.state.statusText, /播放器加载/);
+});
+
+test('暂停金培同时暂停内嵌媒体和原生页面计时', () => {
+    const t = setupJn();
+    let stopped = 0;
+    t.context.window.tt = 9; t.context.window.myload = () => {};
+    t.context.clearInterval = id => { assert.equal(id, 9); stopped++; };
+    t.pauseAutomation('测试暂停');
+    assert.equal(stopped, 1);
+    assert.equal(t.fixture.video.paused, true);
+});
+
+test('首次识别账号清除未归属的旧进度，保留平台登录和界面偏好', () => {
+    const t = setup([['accountId', 'account-a'], ['_kme_m_progress', '旧进度']], [
+        ['_kme_h_maps', '["old-map"]'], ['_kme_selected_tasks', '{"mode":"ids","ids":["old-map"]}'],
+        ['_kme_course_outcome_old', '{}'], ['_kme_concurrency', '3'], ['platform-data', 'keep']]);
+    assert.equal(t.getHandledMaps().length, 0);
+    assert.equal(t.storage.has('_kme_m_progress'), false);
+    assert.equal(t.localStorageMap.has('_kme_course_outcome_old'), false);
+    assert.equal(t.getTaskSelection().mode, 'all');
+    assert.equal(t.getConcurrencySetting(), 3);
+    assert.equal(t.storage.get('accountId'), 'account-a');
+    assert.equal(t.localStorageMap.get('platform-data'), 'keep');
+    assert.equal(t.state.enabled, false);
+});
+
+test('同账号刷新保留进度，token 轮换不当作换号', () => {
+    const t = setup([['accountId', 'account-a']]);
+    t.markMapHandled('map-a');
+    const next = setup([...t.storage], [], { storage: t.localStorageMap });
+    assert.deepEqual(Array.from(next.getHandledMaps()), ['map-a']);
+    next.storage.set('token', 'new-token');
+    assert.equal(next.syncAccountContext(), true);
+    assert.deepEqual(Array.from(next.getHandledMaps()), ['map-a']);
+});
+
+test('运行中换账号会取消操作并清理内存、已处理课程和任务选择', () => {
+    const t = setup([['accountId', 'account-a']]);
+    t.state.enabled = true; t.state.currentCourse = '旧课程';
+    t.markMapHandled('map-a'); t.markCourseHandled('map-a', 'course-a');
+    t.saveTaskCatalog([{ key: 'map-a', title: '旧任务' }]);
+    let clicked = false; t.setManagedTimeout(() => { clicked = true; }, 1000);
+    t.storage.set('accountId', 'account-b');
+    assert.equal(t.syncAccountContext(), false);
+    t.advance(2000);
+    assert.equal(clicked, false);
+    assert.equal(t.state.enabled, false);
+    assert.equal(t.state.currentCourse, '');
+    assert.equal(t.getHandledMaps().length, 0);
+    assert.equal(t.getHandledCourses().length, 0);
+    assert.equal(t.getTaskCatalog().length, 0);
+    assert.equal(t.getTaskSelection().mode, 'all');
+});
+
+test('其他窗口换号时旧窗口停止，不覆盖新账号身份或进度', () => {
+    const a = setup([['accountId', 'account-a']]);
+    const b = setup([['accountId', 'account-b']], [], { storage: a.localStorageMap });
+    b.markMapHandled('map-b');
+    b.localStorageMap.set('_kme_running_state', 'true');
+    const identity = b.localStorageMap.get('_kme_account_identity');
+    a.state.enabled = true;
+    assert.equal(a.syncAccountContext(), false);
+    assert.equal(a.state.enabled, false);
+    assert.equal(a.localStorageMap.get('_kme_account_identity'), identity);
+    assert.equal(a.localStorageMap.get('_kme_running_state'), 'true');
+    assert.equal(b.getHandledMaps().includes('map-b'), true);
+    assert.equal(a.syncAccountContext(), false);
+});
+
+test('进入易知登录页立即清理旧学习状态，不等待新账号开始播放', async () => {
+    const t = setup([['accountId', 'account-a']]);
+    t.markMapHandled('old-map');
+    t.context.location.href = 'https://pc.kmelearning.com/jsncxyslhs/home/login';
+    await t.mainLoop();
+    assert.equal(t.getHandledMaps().length, 0);
+    assert.equal(t.localStorageMap.get('_kme_account_identity'), 'logged-out');
+    assert.equal(t.state.enabled, false);
+});
+
+test('停留在旧登录页的窗口不会反复清掉另一个窗口新登录账号的进度', () => {
+    const login = setup([], [], { url: 'https://pc.kmelearning.com/home/login' });
+    const loggedIn = setup([['accountId', 'account-b']], [], { storage: login.localStorageMap });
+    loggedIn.markMapHandled('new-map');
+    assert.equal(login.syncAccountContext(), false);
+    assert.equal(loggedIn.getHandledMaps().includes('new-map'), true);
+    assert.notEqual(loggedIn.localStorageMap.get('_kme_account_identity'), 'logged-out');
+});
 
 function taskCardsFor(t) {
     const cards = ['1', '2'].map(id => ({ innerText: '学习地图' + id + '\n进行中', offsetParent: {}, clicks: 0,
@@ -1791,7 +2004,7 @@ test('[HUD 最小化 1] 最小化时折叠为单个海螺图标悬浮球，隐�
     assert.match(hud.innerHTML, /id="jinpei-hud-dot"[^>]*top:\s*7px;?[^>]*right:\s*7px/, '折叠时状态绿点应居内定位避免贴边截断');
 });
 
-test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本号 v1.7.1', async () => {
+test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与当前版本号', async () => {
     const { t, getShadowRoot } = renderHUDTest([['_kme_pref_col', 'false']]);
     await t.mainLoop();
 
@@ -1812,7 +2025,7 @@ test('[HUD 最小化 2] 默认展开时显示完整标题神奇海螺与版本�
 test('[HUD 更新提醒] 检测到远程新版本时在 HUD 标题栏显示更新徽标与下载链接', async () => {
     const { t, getShadowRoot } = renderHUDTest([
         ['_kme_pref_col', 'false'],
-        ['_kme_latest_version', '1.8.0']
+        ['_kme_latest_version', '99.0.0']
     ]);
     await t.mainLoop();
 
@@ -1821,7 +2034,7 @@ test('[HUD 更新提醒] 检测到远程新版本时在 HUD 标题栏显示更�
     assert.ok(hud);
 
     assert.match(hud.innerHTML, /id="jinpei-hud-update-badge"[^>]*display:\s*inline-block/, '存在新版本时应展示更新徽标');
-    assert.match(hud.innerHTML, />更新 v1\.8\.0<\/a>/, '更新徽标应展示新版本号');
+    assert.match(hud.innerHTML, />更新 v99\.0\.0<\/a>/, '更新徽标应展示新版本号');
     assert.match(hud.innerHTML, /href="https:\/\/gh-proxy\.org\/[^"]*pc\.js"/, '更新徽标应链接到 userscript 下载地址');
 });
 

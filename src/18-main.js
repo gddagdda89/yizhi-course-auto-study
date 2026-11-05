@@ -2,9 +2,11 @@
     // 5. 主循环调度器
     // ==========================================
     function mainLoop() {
+        if (!syncAccountContext()) return;
         syncRetryEpoch();
         createHUD();
         renderTaskSelection();
+        if (IS_JNFTC) return handleJnPlatform();
 
         // 未手动启动时，不执行任何自动化逻辑（包括不自动弹窗确认、不自动播放、不自动跳转）
         if (!state.enabled) return;
@@ -33,6 +35,9 @@
     }
 
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('storage', event => {
+            if (event.key === ACCOUNT_ID_KEY || event.key === ACCOUNT_EPOCH_KEY) syncAccountContext();
+        });
         window.addEventListener('beforeunload', () => {
             if (!state.enabled || !CONFIG.debugPlayback) return;
             const video = document.querySelector('video');
@@ -42,9 +47,9 @@
             });
         });
     }
-    enableAntiPause();
+    if (!IS_JNFTC) enableAntiPause();
     const workerTimer = createWorkerInterval(mainLoop, CONFIG.checkInterval);
     setTimeout(mainLoop, 1000);
     checkScriptUpdate().catch(() => {});
 
-    recordDiagnostic('INFO', '脚本初始化 v1.7.1，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')');
+    recordDiagnostic('INFO', '脚本初始化 v1.8.0，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));

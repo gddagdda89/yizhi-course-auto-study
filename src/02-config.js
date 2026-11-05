@@ -1,6 +1,13 @@
-    const SCRIPT_VERSION = '1.7.1';
+    const SCRIPT_VERSION = '1.8.0';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.1】脚本初始化启动...");
+    function detectPlatform(url) {
+        return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
+    }
+    const PLATFORM = detectPlatform(location.href);
+    const IS_JNFTC = PLATFORM === 'jnftc';
+    const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
+
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.0】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {

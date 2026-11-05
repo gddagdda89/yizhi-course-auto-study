@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         神奇海螺
 // @namespace    https://github.com/gddagdda89/yizhi-course-auto-study
-// @version      1.7.1
-// @description  易知平台课程自动学习助手，支持课程连播、末尾重播恢复与多窗口调度
+// @version      1.8.0
+// @description  易知与江南金培课程学习助手，自动识别平台，支持课程连播与学习状态检查
 // @author       gddagdda89
 // @license      MIT
 // @homepageURL  https://github.com/gddagdda89/yizhi-course-auto-study
@@ -10,6 +10,8 @@
 // @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js
 // @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js
 // @match        https://pc.kmelearning.com/*
+// @match        https://jnftc.jnbank.com.cn/*
+// @noframes
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -17,9 +19,16 @@
 (function () {
     'use strict';
 
-const SCRIPT_VERSION = '1.7.1';
+const SCRIPT_VERSION = '1.8.0';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.7.1】脚本初始化启动...");
+    function detectPlatform(url) {
+        return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
+    }
+    const PLATFORM = detectPlatform(location.href);
+    const IS_JNFTC = PLATFORM === 'jnftc';
+    const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
+
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.0】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -67,6 +76,105 @@ const SCRIPT_VERSION = '1.7.1';
         lastUpdateCheck: '_kme_last_update_check', // 最近一次检查远程版本时间戳
         latestVersion: '_kme_latest_version',     // 缓存的远程最新版本号
     };
+
+// 账号切换时仅清理助手的学习状态，绝不清除平台登录信息或 HUD 偏好。
+    const ACCOUNT_ID_KEY = '_kme_account_identity';
+    const ACCOUNT_SESSION_KEY = '_kme_session_account';
+    const ACCOUNT_EPOCH_KEY = '_kme_account_epoch';
+    const ACCOUNT_LEARNING_KEYS = [STORAGE_KEYS.running, STORAGE_KEYS.handledCourses, STORAGE_KEYS.handledMaps,
+        STORAGE_KEYS.mapProgress, STORAGE_KEYS.watchdog, STORAGE_KEYS.completionReplay, STORAGE_KEYS.failedVideos,
+        STORAGE_KEYS.diagnostics, STORAGE_KEYS.retryEpoch, STORAGE_KEYS.selectedTasks, STORAGE_KEYS.taskCatalog,
+        STORAGE_KEYS.activeTabs, '_kme_worker_pending', '_jnftc_context',
+        'jinpei_auto_running', 'jinpei_handled_courses', 'jinpei_handled_maps', 'jinpei_map_progress'];
+    let accountStale = false;
+    let accountStaleNotified = false;
+
+    function accountFingerprint(value) {
+        let hash = 2166136261;
+        for (const char of value) { hash ^= char.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+        return PLATFORM + ':' + (hash >>> 0).toString(16) + ':' + value.length;
+    }
+
+    function readAccountIdentity() {
+        const path = new URL(location.href).pathname;
+        if (IS_JNFTC) {
+            if (/\/Website\/Index\.aspx$/i.test(path) && !jnLoggedIn()) return 'logged-out';
+            return '';
+        }
+        if (/\/home\/login(?:\/|$)/i.test(path)) return 'logged-out';
+        // 与平台 18828/63118 模块一致，优先稳定账号 ID，不把轮换的 token 当账号。
+        let id = getStorageItem('accountId');
+        if (!id) {
+            try { id = JSON.parse(getStorageItem('userInfo') || 'null')?.id; } catch (_) {}
+        }
+        if (!id) {
+            try { id = JSON.parse(getLocalItem('wmy@expire_token', 'null'))?.accountId; } catch (_) {}
+        }
+        return id ? accountFingerprint(String(id)) : '';
+    }
+
+    function clearAccountLearningStorage(includeLocal) {
+        for (const key of ACCOUNT_LEARNING_KEYS) {
+            try { sessionStorage.removeItem(key); } catch (_) {}
+            if (includeLocal) { try { localStorage.removeItem(key); } catch (_) {} }
+        }
+        if (includeLocal) {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+            for (const key of keys) {
+                if (/^_kme_(?:course_outcome_|tab_|task_busy_)/.test(key || '')) localStorage.removeItem(key);
+            }
+        }
+    }
+
+    function checkAccountStorage() {
+        if (accountStale) return true;
+        try {
+            const identity = readAccountIdentity();
+            if (!identity) return false;
+            const shared = localStorage.getItem(ACCOUNT_ID_KEY);
+            const previous = sessionStorage.getItem(ACCOUNT_SESSION_KEY);
+            const sharedEpoch = localStorage.getItem(ACCOUNT_EPOCH_KEY);
+            const ownEpoch = sessionStorage.getItem(ACCOUNT_EPOCH_KEY);
+            if (identity === 'logged-out' && previous === 'logged-out' && shared && shared !== 'logged-out') {
+                clearAccountLearningStorage(false); accountStale = true; return true;
+            }
+            // 旧标签仍持有旧账号的 sessionStorage 时，不能覆盖新账号的全站缓存。
+            if (identity !== 'logged-out' && shared && identity !== shared && previous === identity) {
+                clearAccountLearningStorage(false); accountStale = true; return true;
+            }
+            const changed = identity !== shared;
+            if (changed) {
+                clearAccountLearningStorage(true);
+                localStorage.setItem(ACCOUNT_ID_KEY, identity);
+                localStorage.setItem(ACCOUNT_EPOCH_KEY, Date.now() + ':' + Math.random());
+            } else if (sharedEpoch !== ownEpoch || previous && previous !== identity) {
+                clearAccountLearningStorage(false);
+            }
+            sessionStorage.setItem(ACCOUNT_SESSION_KEY, identity);
+            sessionStorage.setItem(ACCOUNT_EPOCH_KEY, localStorage.getItem(ACCOUNT_EPOCH_KEY) || '');
+            return changed || sharedEpoch !== ownEpoch || !!previous && previous !== identity;
+        } catch (_) { return false; }
+    }
+
+    const accountResetOnStartup = checkAccountStorage();
+
+    function syncAccountContext() {
+        if (accountStale && accountStaleNotified) return false;
+        if (!checkAccountStorage() && !accountStale) return true;
+        const running = accountStale ? getLocalItem(STORAGE_KEYS.running) : null;
+        pauseAutomation(accountStale ? '登录账号已在其他窗口改变，请刷新此页后重新开始。' : '登录账号已变化，旧学习进度已清空，请重新开始。');
+        if (running !== null) setLocalItem(STORAGE_KEYS.running, running);
+        if (accountStale) accountStaleNotified = true;
+        courseOutcomeMemory.clear();
+        taskCatalogMemory = []; taskCatalogAttemptAt = -Infinity; taskSelectionRenderKey = '';
+        completionReplayMemory = null; jnContext = {}; jnMedia = null; jnProgress = null;
+        lastRetryEpoch = ''; diagnosticLogs = [];
+        for (const key of ['currentTask', 'currentCourse', 'currentSubVideo', 'videoProgress', 'allCoursesProgress', 'courseTotalProgress']) state[key] = '';
+        state.courseTotalPercent = 0;
+        renderTaskSelection(true); updateHUD(state.statusText);
+        return false;
+    }
 
 function getStorageItem(keyName, legacyKey) {
         try {
@@ -521,7 +629,7 @@ function getStorageItem(keyName, legacyKey) {
             if (typeof value === 'string') return value;
             try { return JSON.stringify(value) ?? String(value); } catch (_) { return String(value); }
         }).join(' ').slice(0, 1200);
-        diagnosticLogs.push({ time: Date.now(), level, tab: TAB_ID, message,
+        diagnosticLogs.push({ time: Date.now(), level, tab: TAB_ID, message, platform: PLATFORM_NAME,
             task: state.currentTask, course: state.currentCourse, sub: state.currentSubVideo,
             syncRetry: state.syncRetryCount, route: location.href.split(/[?#]/)[0].replace(/^https?:\/\/[^/]+/, '') });
         diagnosticLogs = diagnosticLogs.slice(-DIAGNOSTIC_LIMIT);
@@ -544,7 +652,7 @@ function getStorageItem(keyName, legacyKey) {
     function formatDiagnosticLogs() {
         return '神奇海螺诊断日志\n' + diagnosticLogs.map(entry =>
             `[${formatLogTimestamp(entry.time)}] [${entry.level}] [${entry.tab}] ${entry.message}\n` +
-            `  任务=${entry.task || '-'} 课程=${entry.course || '-'} 小节=${entry.sub || '-'} 同步重试=${entry.syncRetry || 0} 页面=${entry.route || '-'}`
+            `  平台=${entry.platform || '易知'} 任务=${entry.task || '-'} 课程=${entry.course || '-'} 小节=${entry.sub || '-'} 同步重试=${entry.syncRetry || 0} 页面=${entry.route || '-'}`
         ).join('\n');
     }
 
@@ -760,6 +868,7 @@ function getStorageItem(keyName, legacyKey) {
 
         const video = document.querySelector('video');
         if (video && !video.paused) video.pause();
+        if (IS_JNFTC) pauseJnPlayback();
 
         const icon = getHUDElement('jinpei-btn-icon');
         const text = getHUDElement('jinpei-btn-text');
@@ -1421,7 +1530,7 @@ function createHUD() {
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.7.1</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.0</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -1432,6 +1541,7 @@ function createHUD() {
 
             <!-- 主体内容卡片 -->
             <div id="jinpei-hud-body" style="display: ${isCollapsed ? 'none' : 'block'}; padding: 12px 14px 14px 14px;">
+                <div style="font-size:11px;color:#64748b;margin-bottom:8px;">当前平台：${PLATFORM_NAME}</div>
                 <!-- 快捷启动/暂停按键 -->
                 <button id="jinpei-toggle-btn" class="jinpei-btn-action" style="
                     width: 100%;
@@ -1868,6 +1978,14 @@ function createHUD() {
         const decBtn = getHUDElement('jinpei-concurrency-dec');
         const incBtn = getHUDElement('jinpei-concurrency-inc');
         const openTabBtn = getHUDElement('jinpei-open-tab-btn');
+
+        if (IS_JNFTC) {
+            // 金培按任务顺序流转；复用面板，避免把易知的多窗口规则用于旧平台。
+            for (const button of [decBtn, incBtn, openTabBtn]) {
+                if (button) { button.disabled = true; button.title = '江南金培使用单窗口顺序学习'; }
+            }
+            setConcurrencySetting(1);
+        }
 
         if (decBtn && typeof decBtn.addEventListener === 'function') {
             decBtn.addEventListener('click', (e) => {
@@ -3074,6 +3192,8 @@ function getTaskCards() {
     }
 
     async function loadTaskCatalog(force = false) {
+        if (IS_JNFTC) return loadJnTaskCatalog(force);
+        const accountEpoch = getLocalItem(ACCOUNT_EPOCH_KEY);
         if (taskCatalogLoading) return taskCatalogLoading;
         try {
             const cache = JSON.parse(getLocalItem(STORAGE_KEYS.taskCatalog, 'null'));
@@ -3109,6 +3229,7 @@ function getTaskCards() {
                 const entries = await Promise.race([collect(), new Promise((_, reject) => {
                     timer = setTimeout(() => { controller?.abort(); reject(new Error('任务列表加载超时')); }, 5000);
                 })]);
+                if (accountEpoch !== getLocalItem(ACCOUNT_EPOCH_KEY) || accountStale) return getTaskCatalog();
                 saveTaskCatalog(entries, Date.now());
                 taskCatalogMessage = entries.length ? '' : '今天暂无学习地图。';
             } catch (error) {
@@ -3835,13 +3956,349 @@ function getTaskCards() {
         }
     }
 
+// 江南金培适配：独立于易知的路由、任务和播放器流程，仍共用 HUD 和诊断日志。
+    const JN_CONTEXT_KEY = '_jnftc_context';
+    let jnBusy = false;
+    let jnLoginWaiting = false;
+    let jnMedia = null;
+    let jnProgress = null;
+    let jnClockPaused = false;
+    let jnContext = {};
+    try { jnContext = JSON.parse(getStorageItem(JN_CONTEXT_KEY) || '{}') || {}; } catch (_) {}
+
+    function jnSave() { setStorageItem(JN_CONTEXT_KEY, JSON.stringify(jnContext)); }
+
+    function jnRoot(url = location.href) {
+        return new URL(url).pathname.match(/^\/WebTraining\d*/i)?.[0] || '/WebTraining14';
+    }
+
+    function jnUrl(value, base = location.href) {
+        try {
+            const url = new URL(value, base);
+            if (!/^https?:$/.test(url.protocol) || url.origin !== new URL(location.href).origin) return '';
+            if (!/^\/WebTraining\d*\/Web\//i.test(url.pathname)) return '';
+            return url.href;
+        } catch (_) { return ''; }
+    }
+
+    function jnTaskUrl() { return new URL(jnRoot() + '/Web/MyDuty/MyDutyList.aspx?Menu=9', location.href).href; }
+
+    function jnText(el) { return (el?.innerText || el?.textContent || '').trim().replace(/\s+/g, ' '); }
+
+    function jnLoggedIn(doc = document) {
+        return !!doc.querySelector('#Top1_lbtnLogout,#Top1_BtnLogOut,.theme-login2,#lblCurrDuty,#tbCurTabIndex,#txtLoginInfoId,.a-2') ||
+            !!doc.querySelector('[id$="_BtnLogOut"],[id$="_lbtnLogout"]') ||
+            /\/Web\//i.test(location.href) && !!doc.querySelector('a[href*="BtnLogOut"],a[id*="Logout"]');
+    }
+
+    function jnReadTasks(doc, base) {
+        return Array.from(doc.querySelectorAll('#lblCurrDuty > div > div')).flatMap(card => {
+            const link = card.querySelector('a[href*="DutyShow.aspx"]');
+            const url = link && jnUrl(link.getAttribute('href'), base);
+            const key = url && new URL(url).searchParams.get('DutyId');
+            return key ? [{ key, title: jnText(card) || '学习任务', url }] : [];
+        });
+    }
+
+    async function jnFetchTaskPages(url, signal) {
+        let response = await fetch(url, { credentials: 'same-origin', signal });
+        const tasks = [];
+        for (let page = 0; page < 20; page++) {
+            if (!response.ok) throw new Error('任务列表读取失败');
+            const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+            if (!doc.querySelector('#lblCurrDuty')) throw new Error('请先手动登录江南金培');
+            tasks.push(...jnReadTasks(doc, response.url || url));
+            const current = Number(jnText(doc.querySelector('#PageSplit1_LbPageIndex')));
+            const total = Number(jnText(doc.querySelector('#PageSplit1_LbPageCount')));
+            if (!(current > 0 && current < total)) return tasks;
+            const next = doc.querySelector('#PageSplit1_BtnNext');
+            const target = next?.getAttribute('href')?.match(/__doPostBack\('([\w$]+)'/i)?.[1];
+            if (!target) throw new Error('未识别任务分页，请前往任务中心检查');
+            const data = new URLSearchParams();
+            doc.querySelectorAll('input[type="hidden"][name]').forEach(el => data.set(el.name, el.value));
+            data.set('__EVENTTARGET', target); data.set('__EVENTARGUMENT', '');
+            response = await fetch(url, { method: 'POST', credentials: 'same-origin', body: data, signal });
+        }
+        throw new Error('任务分页超过读取上限，请在任务中心分批查看');
+    }
+
+    async function loadJnTaskCatalog(force = false) {
+        if (taskCatalogLoading) return taskCatalogLoading;
+        if (!force && Date.now() - taskCatalogAttemptAt < 60000) return getTaskCatalog();
+        taskCatalogAttemptAt = Date.now();
+        taskCatalogLoading = (async () => {
+            const accountEpoch = getLocalItem(ACCOUNT_EPOCH_KEY);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+            try {
+                const url = jnTaskUrl();
+                const tasks = await jnFetchTaskPages(url, controller.signal);
+                if (accountEpoch !== getLocalItem(ACCOUNT_EPOCH_KEY) || accountStale) return getTaskCatalog();
+                jnLoginWaiting = false;
+                saveTaskCatalog(tasks, Date.now());
+                taskCatalogMessage = getTaskCatalog().length ? '' : '暂无学习任务。';
+            } catch (error) {
+                if (error.message.includes('登录')) jnLoginWaiting = true;
+                taskCatalogMessage = error.name === 'AbortError' ? '任务读取超时，可点击刷新。' : error.message;
+            } finally { clearTimeout(timeout); }
+            return getTaskCatalog();
+        })();
+        try { return await taskCatalogLoading; } finally { taskCatalogLoading = null; }
+    }
+
+    function jnGo(value) {
+        const url = jnUrl(value);
+        if (!url) throw new Error('无法识别金培页面地址，请检查页面');
+        jnSave();
+        state.isActionPending = true;
+        location.href = url;
+    }
+
+    function jnOpenCourseUrl(link, base = location.href) {
+        const code = link?.getAttribute('onclick') || '';
+        const match = code.match(/window\.open\(\s*(['"])([^'"]+)\1/);
+        const url = jnUrl(match?.[2] || link?.getAttribute('href'), base);
+        return url && /\/Layer_CourseInfo\.aspx$/i.test(new URL(url).pathname) ? url : '';
+    }
+
+    function jnReadVideos(doc = document, base = location.href) {
+        return Array.from(doc.querySelectorAll('#table a[onclick]')).flatMap(link => {
+            const code = link.getAttribute('onclick') || '';
+            if (!/^\s*Online\(/i.test(code)) return [];
+            const args = Array.from(code.matchAll(/['"]([^'"]*)['"]/g), m => m[1]);
+            if (args.length !== 4 || !/^[\w-]+$/.test(args[0]) || !/^[\w-]+$/.test(args[3]) || !/^\d+$/.test(args[2])) return [];
+            const url = new URL('OnLineRead.aspx', base);
+            url.search = new URLSearchParams({ CoursewareId: args[0], TypeValue: '0', Type: args[2], CourseId: args[3] }).toString();
+            // 与平台 Online() 保持相同编码，兼容旧 ASP.NET 的中文课件路径。
+            const target = jnUrl(url.href + '&Url=' + escape(args[1]), base);
+            return target ? [{ id: args[0], url: target, title: jnText(link.closest('tr')?.querySelector('td')) || '视频课件' }] : [];
+        });
+    }
+
+    function jnStatusDone(selector, doc = document) {
+        const el = doc.querySelector(selector);
+        return !!el && /(?:ico_kecheng_t[23]_over|CourseOver)\.(?:png|jpg)/i.test(el.getAttribute('style') || '');
+    }
+
+    function jnNextPage() {
+        const current = Number(jnText(document.querySelector('#PageSplit1_LbPageIndex')));
+        const total = Number(jnText(document.querySelector('#PageSplit1_LbPageCount')));
+        const next = document.querySelector('#PageSplit1_BtnNext');
+        if (current > 0 && current < total && next && !next.disabled && !next.classList.contains('aspNetDisabled')) {
+            state.isActionPending = true;
+            jnSave();
+            next.click();
+            return true;
+        }
+        return false;
+    }
+
+    function jnChangeDutyTab(index) {
+        const input = document.querySelector('#tbCurTabIndex');
+        if (!input || String(input.value) === String(index)) return false;
+        input.value = String(index);
+        state.isActionPending = true;
+        jnSave();
+        const form = input.form || document.querySelector('form');
+        if (!form) throw new Error('未找到学习任务表单');
+        form.submit();
+        return true;
+    }
+
+    function jnDocuments() {
+        const docs = [document];
+        for (let i = 0; i < docs.length && i < 10; i++) {
+            for (const frame of docs[i].querySelectorAll('iframe,frame')) {
+                try { if (frame.contentDocument && !docs.includes(frame.contentDocument)) docs.push(frame.contentDocument); } catch (_) {}
+            }
+        }
+        return docs;
+    }
+
+    function pauseJnPlayback() {
+        for (const doc of jnDocuments()) {
+            for (const video of doc.querySelectorAll('video,audio')) { if (!video.paused) video.pause(); }
+        }
+        if (typeof window.myload === 'function' && window.tt !== undefined) {
+            clearInterval(window.tt);
+            jnClockPaused = true;
+        }
+        if (jnProgress) jnProgress.suspended = true;
+    }
+
+    function jnFinishDuty() {
+        if (jnContext.dutyKey) markMapHandled(jnContext.dutyKey);
+        jnContext = {};
+        jnGo(jnTaskUrl());
+    }
+
+    function jnHandleDuty() {
+        const url = new URL(location.href);
+        const key = url.searchParams.get('DutyId');
+        if (jnContext.dutyKey !== key) jnContext = { dutyKey: key, dutyUrl: location.href, dutyTab: 0, title: document.title };
+        if (!isTaskKeySelected(key)) { pauseAutomation('当前任务未勾选，请在 HUD 中选择后继续。'); return; }
+        if (jnChangeDutyTab(jnContext.dutyTab || 0)) return;
+        const tab = jnContext.dutyTab || 0;
+        if (!document.querySelector('#tbCurTabIndex') || !document.querySelector(tab === 0 ? '#ul-1' : '#ul-2')) {
+            updateHUD('等待任务课程列表加载...'); return;
+        }
+        const rows = document.querySelectorAll(tab === 0 ? '#ul-1 > li' : '#ul-2 > li');
+        const link = Array.from(rows).map(row => ({ row, url: jnOpenCourseUrl(row.querySelector('a[onclick]')) })).find(item => item.url);
+        if (link) {
+            jnContext.courseUrl = link.url;
+            jnContext.courseTitle = jnText(link.row.querySelector('tr td:nth-child(2)')) || '当前课程';
+            jnContext.queue = []; jnContext.index = 0; jnContext.verify = 0;
+            updateHUD('正在进入课程...', jnContext.title, '', '', jnContext.courseTitle);
+            jnGo(link.url);
+            return;
+        }
+        if (jnNextPage()) return;
+        if (tab === 0) { jnContext.dutyTab = 1; jnChangeDutyTab(1); return; }
+        // 两个待学习分类及其分页均检查完才结束，不用总进度文案推断完成。
+        jnFinishDuty();
+    }
+
+    function jnHandleCourse() {
+        jnContext.courseUrl = location.href;
+        const courseId = new URL(location.href).searchParams.get('CourseId');
+        if (jnContext.courseId !== courseId) {
+            jnContext.courseId = courseId; jnContext.queue = []; jnContext.index = 0; jnContext.verify = 0;
+        }
+        if (jnStatusDone('.a-4')) {
+            diagnosticConsole.log('金培：平台已确认课程完成。');
+            jnContext.queue = []; jnContext.index = 0; jnContext.verify = 0;
+            jnGo(jnContext.dutyUrl || jnTaskUrl()); return;
+        }
+        if (jnStatusDone('.a-2')) {
+            const examLink = document.querySelector('a[onclick*="CreateExam"]');
+            if (examLink && !jnStatusDone('.a-3')) {
+                pauseAutomation('视频已完成，此课程需要手动考试；完成后点击开始继续。'); return;
+            }
+            // 评价由用户确认，避免自动代填评分；平台未完成时不跳过课程。
+            pauseAutomation('视频已完成，请检查课程考试/评价，完成后点击开始继续。'); return;
+        }
+        const batch = jnReadVideos();
+        const queue = jnContext.queue || [];
+        for (const item of batch) { if (!queue.some(old => old.id === item.id)) queue.push(item); }
+        jnContext.queue = queue;
+        if (jnNextPage()) return;
+        if (!queue.length) { pauseAutomation('未识别到可播放课件，请检查课程页面。'); return; }
+        const next = queue[jnContext.index || 0];
+        if (next) { updateHUD('正在打开视频课件...', jnContext.title, next.title, '', jnContext.courseTitle); jnGo(next.url); return; }
+        jnContext.verify = (jnContext.verify || 0) + 1;
+        if (jnContext.verify > 3) { pauseAutomation('课件已播放完，平台仍未确认完成，请检查学习记录。'); return; }
+        state.isActionPending = true;
+        updateHUD('等待平台确认课程学习记录...');
+        jnSave();
+        setManagedTimeout(() => location.reload(), 5000);
+    }
+
+    function jnHandlePlayer() {
+        const currentId = new URL(location.href).searchParams.get('CoursewareId');
+        const item = jnContext.queue?.[jnContext.index || 0];
+        if (item && item.id !== currentId) { pauseAutomation('课件与当前任务不一致，已暂停，请从任务中心重新开始。'); return; }
+        const video = jnDocuments().map(doc => doc.querySelector('video,audio')).find(Boolean);
+        if (!video) {
+            if (!jnProgress) jnProgress = { waitingAt: Date.now() };
+            updateHUD('等待金培播放器加载...', jnContext.title, item?.title);
+            if (Date.now() - jnProgress.waitingAt > 60000) pauseAutomation('金培播放器加载超过 60 秒，请检查课件后继续。');
+            return;
+        }
+        if (jnMedia !== video) {
+            jnMedia = video;
+            jnProgress = { time: video.currentTime, at: Date.now(), lastPlay: 0, endedAt: 0 };
+            // 提前注册，兼容平台 ended 回调把进度归零的播放器。
+            video.addEventListener('ended', () => { if (jnMedia === video) jnProgress.endedAt = Date.now(); }, true);
+        }
+        if (jnProgress.suspended) {
+            jnProgress.at = Date.now();
+            jnProgress.lastPlay = 0;
+            if (jnProgress.endedAt) jnProgress.endedAt = Date.now();
+            jnProgress.suspended = false;
+        }
+        if (!jnProgress.endedAt && video.ended) jnProgress.endedAt = Date.now();
+        if (jnClockPaused && typeof window.myload === 'function') { window.myload(); jnClockPaused = false; }
+        if (jnProgress.endedAt) {
+            updateHUD('课件播放结束，等待平台同步记录...');
+            if (Date.now() - jnProgress.endedAt < 6000) return;
+            const resources = typeof performance !== 'undefined' && performance.getEntriesByType ? performance.getEntriesByType('resource') : [];
+            const synced = resources.some(entry => /\/SetTime\.ashx(?:\?|$)/i.test(entry.name) &&
+                performance.timeOrigin + entry.startTime >= jnProgress.endedAt);
+            if (!synced) {
+                if (Date.now() - jnProgress.endedAt > 75000) pauseAutomation('播放已结束，但未观察到平台最后一次学习时间提交，请检查页面后继续。');
+                return;
+            }
+            if (!jnContext.courseUrl) { pauseAutomation('课件已结束，请返回课程详情核对学习状态。'); return; }
+            jnContext.index = (jnContext.index || 0) + 1;
+            jnGo(jnContext.courseUrl); return;
+        }
+        video.muted = CONFIG.autoMute;
+        if (video.playbackRate !== 1) video.playbackRate = 1;
+        updateHUD('正在播放金培课件...', jnContext.title, item?.title || '当前课件',
+            `${formatTime(video.currentTime)} / ${formatTime(video.duration || 0)}`, jnContext.courseTitle);
+        if (Math.abs(video.currentTime - jnProgress.time) >= 0.5) { jnProgress.time = video.currentTime; jnProgress.at = Date.now(); }
+        if (Date.now() - jnProgress.at > 60000) { pauseAutomation('金培播放器超过 60 秒没有进度，请检查网络后继续。'); return; }
+        if (video.paused && Date.now() - jnProgress.lastPlay > 4000) {
+            jnProgress.lastPlay = Date.now();
+            Promise.resolve(video.play()).catch(error => diagnosticConsole.warn('金培播放请求失败：', error.message));
+        }
+    }
+
+    async function handleJnPlatform() {
+        if (jnBusy) return;
+        if (!jnLoggedIn()) {
+            jnLoginWaiting = true;
+            updateHUD('江南金培：等待你手动登录，登录后继续。');
+            return;
+        }
+        if (jnLoginWaiting) { jnLoginWaiting = false; taskCatalogAttemptAt = -Infinity; }
+        if (!state.enabled && /等待你手动登录/.test(state.statusText)) updateHUD('已登录江南金培，请点击开始学习。');
+        if (!state.enabled || state.isActionPending) return;
+        jnBusy = true;
+        try {
+            const sourceUrl = location.href;
+            const generation = claimGeneration;
+            const path = new URL(location.href).pathname.toLowerCase();
+            if (path.includes('/myexam/')) { pauseAutomation('请手动完成考试，之后返回课程页面继续。'); return; }
+            if (!currentClaim) {
+                const claimed = await tryClaimCourseSlot('controller', '江南金培顺序学习', 'jnftc');
+                if (sourceUrl !== location.href || generation !== claimGeneration) return;
+                if (!state.enabled || !claimed) { if (state.enabled) updateHUD('另一个窗口正在处理金培任务，请在该窗口继续。'); return; }
+            }
+            registerTabHeartbeat();
+            if (path.endsWith('/onlineread.aspx')) { jnHandlePlayer(); return; }
+            if (path.endsWith('/layer_courseinfo.aspx')) { jnHandleCourse(); return; }
+            if (path.endsWith('/dutyshow.aspx')) { jnHandleDuty(); return; }
+            if (!path.endsWith('/mydutylist.aspx')) { jnGo(jnTaskUrl()); return; }
+            const tasks = jnReadTasks(document, location.href);
+            if (!document.querySelector('#lblCurrDuty')) { updateHUD('等待金培学习任务加载...'); return; }
+            saveTaskCatalog(tasks, Date.now()); renderTaskSelection(true);
+            const next = tasks.find(task => isTaskKeySelected(task.key) && !getHandledMaps().includes(task.key));
+            if (!next) {
+                if (jnNextPage()) return;
+                pauseAutomation('已选金培任务检查结束；最终完成状态以平台为准。'); return;
+            }
+            jnContext = { dutyKey: next.key, dutyUrl: next.url, title: next.title, dutyTab: 0 };
+            updateHUD('正在进入金培学习任务...', next.title);
+            jnGo(next.url);
+        } catch (error) { if (state.enabled) pauseAutomation('金培流程异常：' + error.message); }
+        finally { jnBusy = false; }
+    }
+
+    if (IS_JNFTC && typeof window.confirm === 'function') {
+        const nativeConfirm = window.confirm.bind(window);
+        window.confirm = message => state.enabled && /^是否继续学习[？?]?$/.test(String(message).trim()) ? true : nativeConfirm(message);
+    }
+
 // ==========================================
     // 5. 主循环调度器
     // ==========================================
     function mainLoop() {
+        if (!syncAccountContext()) return;
         syncRetryEpoch();
         createHUD();
         renderTaskSelection();
+        if (IS_JNFTC) return handleJnPlatform();
 
         // 未手动启动时，不执行任何自动化逻辑（包括不自动弹窗确认、不自动播放、不自动跳转）
         if (!state.enabled) return;
@@ -3870,6 +4327,9 @@ function getTaskCards() {
     }
 
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('storage', event => {
+            if (event.key === ACCOUNT_ID_KEY || event.key === ACCOUNT_EPOCH_KEY) syncAccountContext();
+        });
         window.addEventListener('beforeunload', () => {
             if (!state.enabled || !CONFIG.debugPlayback) return;
             const video = document.querySelector('video');
@@ -3879,11 +4339,11 @@ function getTaskCards() {
             });
         });
     }
-    enableAntiPause();
+    if (!IS_JNFTC) enableAntiPause();
     const workerTimer = createWorkerInterval(mainLoop, CONFIG.checkInterval);
     setTimeout(mainLoop, 1000);
     checkScriptUpdate().catch(() => {});
 
-    recordDiagnostic('INFO', '脚本初始化 v1.7.1，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')');
+    recordDiagnostic('INFO', '脚本初始化 v1.8.0，运行状态：' + (state.enabled ? '已启动' : '待启动') + ' (防休眠: ' + (workerTimer.type === 'worker' ? 'Web Worker 独立线程' : '主线程计时器') + ')' + (accountResetOnStartup ? '；已清理上次账号的学习状态' : ''));
 
 })();

@@ -64,6 +64,8 @@
     }
 
     async function loadTaskCatalog(force = false) {
+        if (IS_JNFTC) return loadJnTaskCatalog(force);
+        const accountEpoch = getLocalItem(ACCOUNT_EPOCH_KEY);
         if (taskCatalogLoading) return taskCatalogLoading;
         try {
             const cache = JSON.parse(getLocalItem(STORAGE_KEYS.taskCatalog, 'null'));
@@ -99,6 +101,7 @@
                 const entries = await Promise.race([collect(), new Promise((_, reject) => {
                     timer = setTimeout(() => { controller?.abort(); reject(new Error('任务列表加载超时')); }, 5000);
                 })]);
+                if (accountEpoch !== getLocalItem(ACCOUNT_EPOCH_KEY) || accountStale) return getTaskCatalog();
                 saveTaskCatalog(entries, Date.now());
                 taskCatalogMessage = entries.length ? '' : '今天暂无学习地图。';
             } catch (error) {
