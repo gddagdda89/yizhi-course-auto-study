@@ -1,4 +1,4 @@
-    const SCRIPT_VERSION = '1.8.2';
+    const SCRIPT_VERSION = '1.8.3';
 
     function detectPlatform(url) {
         return /^https:\/\/jnftc\.jnbank\.com\.cn(?:\/|$)/i.test(url) ? 'jnftc' : 'yizhi';
@@ -7,7 +7,7 @@
     const IS_JNFTC = PLATFORM === 'jnftc';
     const PLATFORM_NAME = IS_JNFTC ? '江南金培' : '易知';
 
-    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.2】脚本初始化启动...");
+    console.log(`[${formatLogTimestamp()}]`, "【神奇海螺 v1.8.3】脚本初始化启动...");
 
     // 配置项
     const CONFIG = {
@@ -38,7 +38,7 @@
         defaultConcurrency: 1,        // 默认并发课程数 (1)
         maxConcurrency: 6,            // 最大并发课程数 (6)
         updateCheckInterval: 1800000, // 远程新版本自检周期 (30 分钟)
-        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js',
+        updateUrl: 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js',
     };
 
     // 会话存储与跨标签存储脱敏键名映射（前缀去标识化，并兼容历史键名读取）
@@ -53,6 +53,8 @@
         completionReplay: '_kme_sync_replay', // 未打勾重播次数（跨刷新保留）
         failedVideos: '_kme_wd_failed',   // 卡死跳过的小节列表
         concurrency: '_kme_concurrency',  // 并发课程数设置 (1 ~ 6)
+        fastMode: '_kme_fast_mode',       // 金培极速模式偏好设置 ('1' 开启，'0' 关闭)
+        hudCache: '_kme_hud_cache',       // HUD 界面状态快照缓存（减少跨页面跳转闪动）
         activeTabs: '_kme_active_tabs',   // 并发多标签页活跃状态表
         diagnostics: '_kme_diagnostics', // 当前窗口的最近诊断日志（跨刷新）
         retryEpoch: '_kme_retry_epoch', // 通知暂停窗口清理旧的异常/处理缓存

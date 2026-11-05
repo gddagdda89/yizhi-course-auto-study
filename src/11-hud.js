@@ -81,6 +81,20 @@
         }
         const hasUpdate = Boolean(state.remoteVersion && semverCompare(state.remoteVersion, SCRIPT_VERSION) > 0);
 
+        let cachedHUD = null;
+        try {
+            cachedHUD = JSON.parse(getStorageItem(STORAGE_KEYS.hudCache)) || null;
+        } catch (_) {}
+
+        const initTask = state.currentTask || cachedHUD?.task || '';
+        const initCourse = state.currentCourse || cachedHUD?.course || (IS_JNFTC ? (jnContext?.courseTitle || '') : '');
+        const initAllCourses = state.allCoursesProgress || cachedHUD?.allCoursesProg || '';
+        const initSub = state.currentSubVideo || cachedHUD?.sub || '';
+        const initCourseProg = state.courseTotalProgress || cachedHUD?.courseTotalProg || '';
+        const initCoursePercent = state.courseTotalPercent || cachedHUD?.courseTotalPercent || 0;
+        const initProgress = state.videoProgress || cachedHUD?.videoProgress || '';
+        const initStatus = state.statusText || cachedHUD?.statusText || (state.enabled ? "正在自动流转中..." : "待启动（请点击【开始学习】）");
+
         hud.innerHTML = `
             <!-- 顶部炫彩渐变微光线条 -->
             <div id="jinpei-hud-top-bar" style="height: 3px; background: linear-gradient(90deg, #38bdf8 0%, #818cf8 50%, #f472b6 100%); display: ${isCollapsed ? 'none' : 'block'};"></div>
@@ -94,7 +108,7 @@
                     <div id="jinpei-hud-dot" style="width: 8px; height: 8px; border-radius: 50%; background: ${dotBg}; animation: ${dotAnim}; flex-shrink: 0; ${isCollapsed ? 'position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95); z-index: 2;' : ''}"></div>
                     <span id="jinpei-hud-icon" style="font-size: ${isCollapsed ? '21px' : '14px'}; flex-shrink: 0; line-height: 1;" title="${isCollapsed ? '点击展开神奇海螺' : ''}">🐚</span>
                     <span id="jinpei-hud-title-text" style="font-weight: 600; font-size: 13px; color: #0f172a; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline'};">神奇海螺</span>
-                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.2</span>
+                    <span id="jinpei-hud-version" style="font-size: 10px; color: #64748b; background: rgba(0, 0, 0, 0.05); padding: 1px 6px; border-radius: 4px; font-weight: 500; white-space: nowrap; flex-shrink: 0; display: ${isCollapsed ? 'none' : 'inline-block'};">v1.8.3</span>
                     <a id="jinpei-hud-update-badge" href="${CONFIG.updateUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; color: #ffffff; background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); padding: 1px 6px; border-radius: 4px; font-weight: 600; text-decoration: none; white-space: nowrap; flex-shrink: 0; display: ${hasUpdate && !isCollapsed ? 'inline-block' : 'none'}; cursor: pointer; animation: jinpei-pulse 2s infinite ease-in-out; margin-left: 2px;" title="${hasUpdate ? `发现新版本 v${state.remoteVersion}，点击跳转更新` : '更新'}">更新 v${state.remoteVersion || ''}</a>
                 </div>
                 <div id="jinpei-hud-header-right" style="display: ${isCollapsed ? 'none' : 'flex'}; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap;">
@@ -106,7 +120,6 @@
             <!-- 主体内容卡片 -->
             <div id="jinpei-hud-body" style="display: ${isCollapsed ? 'none' : 'block'}; padding: 12px 14px 14px 14px;">
                 <div style="font-size:11px;color:#64748b;margin-bottom:8px;">当前平台：${PLATFORM_NAME}</div>
-                ${IS_JNFTC ? `<div style="font-size:10px;color:#64748b;margin-bottom:8px;">${CONFIG.jnAutoReport ? '自动计时上报' : '正常播放'} · ${CONFIG.jnAutoExam ? '自动考试' : '手动考试'}</div>` : ''}
                 <!-- 快捷启动/暂停按键 -->
                 <button id="jinpei-toggle-btn" class="jinpei-btn-action" style="
                     width: 100%;
@@ -132,61 +145,61 @@
                         <span style="font-size: 11px; color: #64748b; display: flex; align-items: center; gap: 4px;">
                             <span>⚡</span> 运行状态
                         </span>
-                        <span id="jinpei-hud-status" style="font-size: 11px; color: ${state.enabled ? '#0284c7' : '#d97706'}; font-weight: 500; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${state.statusText}</span>
+                        <span id="jinpei-hud-status" style="font-size: 11px; color: ${state.enabled ? '#0284c7' : '#d97706'}; font-weight: 500; text-align: right; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${initStatus}</span>
                     </div>
 
                     <!-- 任务 -->
-                    <div id="jinpei-hud-task-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                    <div id="jinpei-hud-task-row" style="display: ${initTask ? 'flex' : 'none'}; align-items: flex-start; justify-content: space-between; gap: 6px;">
                         <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
                             <span>📋</span> 任务
                         </span>
-                        <span id="jinpei-hud-task" style="font-size: 11px; color: #d97706; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                        <span id="jinpei-hud-task" style="font-size: 11px; color: #d97706; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">${initTask || '-'}</span>
                     </div>
 
                     <!-- 课程 -->
-                    <div id="jinpei-hud-course-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                    <div id="jinpei-hud-course-row" style="display: ${initCourse ? 'flex' : 'none'}; align-items: flex-start; justify-content: space-between; gap: 6px;">
                         <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
                             <span>📚</span> 课程
                         </span>
-                        <span id="jinpei-hud-course" style="font-size: 11px; color: #7c3aed; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                        <span id="jinpei-hud-course" style="font-size: 11px; color: #7c3aed; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">${initCourse || '-'}</span>
                     </div>
 
                     <!-- 全部课程进度 x/n -->
-                    <div id="jinpei-hud-all-courses-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                    <div id="jinpei-hud-all-courses-row" style="display: ${initAllCourses ? 'flex' : 'none'}; align-items: flex-start; justify-content: space-between; gap: 6px;">
                         <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
                             <span>🗺️</span> 全部课程
                         </span>
-                        <span id="jinpei-hud-all-courses" style="font-size: 11px; color: #059669; font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                        <span id="jinpei-hud-all-courses" style="font-size: 11px; color: #059669; font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">${initAllCourses || '-'}</span>
                     </div>
 
                     <!-- 小节 -->
-                    <div id="jinpei-hud-sub-row" style="display: none; align-items: flex-start; justify-content: space-between; gap: 6px;">
+                    <div id="jinpei-hud-sub-row" style="display: ${initSub ? 'flex' : 'none'}; align-items: flex-start; justify-content: space-between; gap: 6px;">
                         <span style="font-size: 11px; color: #64748b; flex-shrink: 0; display: flex; align-items: center; gap: 4px;">
                             <span>🎬</span> 小节
                         </span>
-                        <span id="jinpei-hud-sub" style="font-size: 11px; color: #db2777; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">-</span>
+                        <span id="jinpei-hud-sub" style="font-size: 11px; color: #db2777; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;">${initSub || '-'}</span>
                     </div>
 
                     <!-- 本课总进度（总时长 + 百分比） -->
-                    <div id="jinpei-hud-course-prog-row" style="display: none; margin-top: 2px;">
+                    <div id="jinpei-hud-course-prog-row" style="display: ${initCourseProg ? 'block' : 'none'}; margin-top: 2px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 4px;">
                             <span style="color: #64748b; display: flex; align-items: center; gap: 4px;">
                                 <span>📊</span> 本课总览
                             </span>
-                            <span id="jinpei-hud-course-prog" style="color: #7c3aed; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">-</span>
+                            <span id="jinpei-hud-course-prog" style="color: #7c3aed; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${initCourseProg || '-'}</span>
                         </div>
                         <div style="width: 100%; height: 4px; background: rgba(0, 0, 0, 0.06); border-radius: 9999px; overflow: hidden;">
-                            <div id="jinpei-hud-course-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #a855f7, #ec4899); border-radius: 9999px; transition: width 0.3s ease;"></div>
+                            <div id="jinpei-hud-course-bar-fill" style="width: ${initCoursePercent}%; height: 100%; background: linear-gradient(90deg, #a855f7, #ec4899); border-radius: 9999px; transition: width 0.3s ease;"></div>
                         </div>
                     </div>
 
                     <!-- 单节播放进度 -->
-                    <div id="jinpei-hud-progress-row" style="display: none; margin-top: 2px;">
+                    <div id="jinpei-hud-progress-row" style="display: ${initProgress ? 'block' : 'none'}; margin-top: 2px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 4px;">
                             <span style="color: #64748b; display: flex; align-items: center; gap: 4px;">
                                 <span>⏱</span> 单节播放
                             </span>
-                            <span id="jinpei-hud-progress" style="color: #0284c7; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">-</span>
+                            <span id="jinpei-hud-progress" style="color: #0284c7; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${initProgress || '-'}</span>
                         </div>
                         <div style="width: 100%; height: 4px; background: rgba(0, 0, 0, 0.06); border-radius: 9999px; overflow: hidden;">
                             <div id="jinpei-hud-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #38bdf8, #6366f1); border-radius: 9999px; transition: width 0.3s ease;"></div>
@@ -203,6 +216,20 @@
                             <span id="jinpei-concurrency-val" style="font-size: 13px; font-weight: 700; color: #0284c7; min-width: 16px; text-align: center; font-family: ui-monospace, monospace;">${state.concurrency}</span>
                             <button id="jinpei-concurrency-inc" class="jinpei-step-btn" title="增加并发课程 (最高 6 路)">＋</button>
                             <span id="jinpei-active-tabs-badge" style="font-size: 10px; color: #059669; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 4px; padding: 1px 5px; font-weight: 600; white-space: nowrap;" title="当前活跃标签页 / 目标并发数">1/1</span>
+                        </div>
+                    </div>
+
+                    <!-- 金培极速模式控制（默认开启 m_time 极速跳过，取消勾选按时长正常挂课） -->
+                    <div id="jinpei-fast-mode-controls" style="display: ${IS_JNFTC ? 'flex' : 'none'}; align-items: center; justify-content: space-between; padding-top: 5px; border-top: 1px dashed rgba(0, 0, 0, 0.08); margin-top: 2px;">
+                        <span style="font-size: 11px; color: #475569; display: flex; align-items: center; gap: 4px; font-weight: 500;" title="开启后通过上报课件时长极速跳过；取消勾选后按课件时长正常挂课（暂停时可切换）">
+                            <span>⚡</span> 极速模式
+                        </span>
+                        <div style="display: flex; align-items: center; gap: 5px;">
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: ${state.enabled ? 'not-allowed' : 'pointer'}; user-select: none;">
+                                <input type="checkbox" id="jinpei-fast-mode-toggle" ${CONFIG.jnAutoReport ? 'checked' : ''} ${state.enabled ? 'disabled' : ''} style="cursor: ${state.enabled ? 'not-allowed' : 'pointer'}; width: 14px; height: 14px; accent-color: #0284c7; margin: 0;" title="${state.enabled ? '运行中不可切换模式，请先暂停' : '开启极速跳过或正常挂课'}">
+                                <span id="jinpei-fast-mode-val" style="font-size: 11px; font-weight: 600; color: ${CONFIG.jnAutoReport ? '#0284c7' : '#64748b'};">${CONFIG.jnAutoReport ? '极速' : '正常'}</span>
+                            </label>
+                            <span style="font-size: 10px; color: #94a3b8; white-space: nowrap;">暂停时可切换</span>
                         </div>
                     </div>
                 </div>
@@ -599,6 +626,33 @@
                 }
             });
         }
+
+        const fastModeToggle = getHUDElement('jinpei-fast-mode-toggle');
+        const fastModeVal = getHUDElement('jinpei-fast-mode-val');
+        if (IS_JNFTC && fastModeToggle && typeof fastModeToggle.addEventListener === 'function') {
+            fastModeToggle.addEventListener('click', (e) => {
+                if (state.enabled) {
+                    e.preventDefault();
+                    fastModeToggle.checked = CONFIG.jnAutoReport;
+                    updateHUD('请先暂停学习，再切换挂课模式。');
+                    return false;
+                }
+            });
+            fastModeToggle.addEventListener('change', () => {
+                if (state.enabled) {
+                    fastModeToggle.checked = CONFIG.jnAutoReport;
+                    updateHUD('请先暂停学习，再切换挂课模式。');
+                    return;
+                }
+                setFastModeSetting(fastModeToggle.checked);
+                if (fastModeVal) {
+                    fastModeVal.textContent = CONFIG.jnAutoReport ? '极速' : '正常';
+                    fastModeVal.style.color = CONFIG.jnAutoReport ? '#0284c7' : '#64748b';
+                }
+                diagnosticConsole.log(`金培：已切换为【${CONFIG.jnAutoReport ? '极速跳过模式' : '正常挂课模式'}】。`);
+                updateHUD(state.statusText);
+            });
+        }
     }
 
     function updateHUD(status, task, sub, progress, course, allCoursesProg, courseTotalProg, courseTotalPercent) {
@@ -740,5 +794,27 @@
             const statusSummary = state.enabled ? (state.videoProgress || state.statusText || '运行中') : '已暂停';
             headerEl.title = `🐚 神奇海螺 · ${statusSummary} (点击展开)`;
         }
+
+        const fastModeToggle = getHUDElement('jinpei-fast-mode-toggle');
+        if (fastModeToggle) {
+            fastModeToggle.disabled = state.enabled;
+            fastModeToggle.style.cursor = state.enabled ? 'not-allowed' : 'pointer';
+            fastModeToggle.title = state.enabled ? '运行中不可切换模式，请先暂停' : '开启极速跳过或正常挂课';
+            const labelEl = fastModeToggle.closest?.('label');
+            if (labelEl) labelEl.style.cursor = state.enabled ? 'not-allowed' : 'pointer';
+        }
+
+        try {
+            setStorageItem(STORAGE_KEYS.hudCache, JSON.stringify({
+                task: state.currentTask,
+                course: state.currentCourse,
+                allCoursesProg: state.allCoursesProgress,
+                sub: state.currentSubVideo,
+                courseTotalProg: state.courseTotalProgress,
+                courseTotalPercent: state.courseTotalPercent,
+                videoProgress: state.videoProgress,
+                statusText: state.statusText
+            }));
+        } catch (_) {}
     }
 

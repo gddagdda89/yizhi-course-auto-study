@@ -292,25 +292,74 @@
             return jnReportStudyTime(video);
         }
         if (jnClockPaused && typeof window.myload === 'function') { window.myload(); jnClockPaused = false; }
-        if (jnProgress.endedAt) {
-            updateHUD('课件播放结束，等待平台同步记录...');
-            if (Date.now() - jnProgress.endedAt < 6000) return;
+        video.muted = CONFIG.autoMute;
+        if (video.playbackRate !== 1) video.playbackRate = 1;
+
+        if (video.paused && !video.ended && Date.now() - jnProgress.lastPlay > 4000) {
+            jnProgress.lastPlay = Date.now();
+            Promise.resolve(video.play()).catch(error => diagnosticConsole.warn('金培播放请求失败：', error.message));
+        }
+
+        if (!Number.isFinite(video.duration) || video.duration <= 0) {
+            if (Date.now() - jnProgress.at > 60000) pauseAutomation('等待课件时长超时，请检查播放器。');
+            else updateHUD('等待课件时长...', jnContext.title, item?.title);
+            return;
+        }
+
+        const targetSeconds = Math.max(60, Math.ceil(video.duration / 60) * 60);
+        const hasNativeClock = typeof window.m_time === 'number' && Number.isFinite(window.m_time);
+        const currentSeconds = hasNativeClock ? window.m_time : Math.floor(video.currentTime || 0);
+        const isVideoEnded = Boolean(jnProgress.endedAt || video.ended || (video.duration > 0 && video.currentTime >= video.duration - 0.5));
+        const clockReached = hasNativeClock ? (currentSeconds >= targetSeconds) : Boolean(isVideoEnded || currentSeconds >= targetSeconds);
+        // 必须同时满足视频播放结束与平台计时达标，避免缓冲或暂停期间计时虚高提前切课
+        const reachedTarget = isVideoEnded && clockReached;
+
+        if (reachedTarget) {
+            if (!jnProgress.targetReachedAt) jnProgress.targetReachedAt = Date.now();
+            updateHUD('已达挂课时长，等待平台同步记录...', jnContext.title, item?.title || '当前课件',
+                `${formatTime(currentSeconds)} / ${formatTime(targetSeconds)}`, jnContext.courseTitle);
+            if (Date.now() - jnProgress.targetReachedAt < 6000) return;
             const resources = typeof performance !== 'undefined' && performance.getEntriesByType ? performance.getEntriesByType('resource') : [];
-            const synced = resources.some(entry => /\/SetTime\.ashx(?:\?|$)/i.test(entry.name) &&
-                performance.timeOrigin + entry.startTime >= jnProgress.endedAt);
+            const referenceTime = Math.min(jnProgress.endedAt || Infinity, jnProgress.targetReachedAt || Infinity) - 5000;
+            const loginId = document.querySelector('#txtLoginInfoId')?.value;
+            const synced = resources.some(entry => {
+                if (!/\/SetTime\.ashx(?:\?|$)/i.test(entry.name)) return false;
+                try {
+                    const url = new URL(entry.name, location.href);
+                    const reqLoginId = url.searchParams.get('LoginInfoId');
+                    const pTime = parseInt(url.searchParams.get('pTime'), 10);
+                    if (loginId && reqLoginId && reqLoginId !== loginId) return false;
+                    if (Number.isFinite(pTime) && pTime < targetSeconds) return false;
+                    return performance.timeOrigin + entry.startTime >= referenceTime;
+                } catch (_) {
+                    return performance.timeOrigin + entry.startTime >= referenceTime;
+                }
+            });
             if (!synced) {
-                if (Date.now() - jnProgress.endedAt > 75000) pauseAutomation('播放已结束，但未观察到平台最后一次学习时间提交，请检查页面后继续。');
+                if (Date.now() - jnProgress.targetReachedAt > 75000) pauseAutomation('播放已结束，但未观察到平台最后一次学习时间提交，请检查页面后继续。');
                 return;
             }
             if (!jnContext.courseUrl) { pauseAutomation('课件已结束，请返回课程详情核对学习状态。'); return; }
             jnContext.index = (jnContext.index || 0) + 1;
             jnGo(jnContext.courseUrl); return;
         }
-        video.muted = CONFIG.autoMute;
-        if (video.playbackRate !== 1) video.playbackRate = 1;
-        updateHUD('正在播放金培课件...', jnContext.title, item?.title || '当前课件',
-            `${formatTime(video.currentTime)} / ${formatTime(video.duration || 0)}`, jnContext.courseTitle);
-        if (Math.abs(video.currentTime - jnProgress.time) >= 0.5) { jnProgress.time = video.currentTime; jnProgress.at = Date.now(); }
+
+        if (isVideoEnded) {
+            const remaining = Math.max(0, targetSeconds - currentSeconds);
+            updateHUD(`视频已播完，补齐挂课时长中 (还需 ${remaining}s)...`, jnContext.title, item?.title || '当前课件',
+                `${formatTime(currentSeconds)} / ${formatTime(targetSeconds)}`, jnContext.courseTitle);
+        } else {
+            updateHUD('正在播放金培课件 (正常挂课)...', jnContext.title, item?.title || '当前课件',
+                `${formatTime(currentSeconds)} / ${formatTime(targetSeconds)}`, jnContext.courseTitle);
+        }
+
+        if (Math.abs(currentSeconds - (jnProgress.lastRecordedTime || 0)) >= 1) {
+            jnProgress.lastRecordedTime = currentSeconds;
+            jnProgress.at = Date.now();
+        } else if (Math.abs(video.currentTime - jnProgress.time) >= 0.5) {
+            jnProgress.time = video.currentTime;
+            jnProgress.at = Date.now();
+        }
         if (Date.now() - jnProgress.at > 60000) { pauseAutomation('金培播放器超过 60 秒没有进度，请检查网络后继续。'); return; }
         if (video.paused && Date.now() - jnProgress.lastPlay > 4000) {
             jnProgress.lastPlay = Date.now();

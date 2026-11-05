@@ -14,7 +14,7 @@ const version = field('version');
 assert.match(version, /^\d+\.\d+\.\d+$/, 'Use a three-part version');
 assert.equal(field('name'), '神奇海螺');
 assert.equal(field('author'), 'gddagdda89');
-const installationUrl = 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.js';
+const installationUrl = 'https://gh-proxy.org/https://raw.githubusercontent.com/gddagdda89/yizhi-course-auto-study/refs/heads/main/pc.user.js';
 assert.equal(field('updateURL'), installationUrl);
 assert.equal(field('downloadURL'), installationUrl);
 const matches = [...metadata[1].matchAll(/^\/\/ @match\s+(.+)$/gm)].map(match => match[1].trim()).sort();
@@ -36,6 +36,8 @@ return version;
 module.exports = { validateRelease };
 if (require.main === module) {
     const source = fs.readFileSync(path.join(__dirname, 'pc.js'), 'utf8');
+    const userScriptSource = fs.readFileSync(path.join(__dirname, 'pc.user.js'), 'utf8');
+    assert.equal(source, userScriptSource, 'pc.user.js must match pc.js');
     const previous = process.argv.find(value => value.startsWith('--previous-version='))?.split('=')[1];
     console.log('Release metadata, installation URL, and script completeness verified: v' + validateRelease(source, previous));
 }

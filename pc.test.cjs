@@ -220,6 +220,97 @@ test('金培播放结束等待平台最后一次上报，确认后返回详情�
     assert.equal(t.getJnContext().index, 1);
 });
 
+test('金培正常挂课模式按n+1分钟向上取整挂满时长，2分53秒未满180秒不交卷，满180秒且上报才返回', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    t.CONFIG.jnAutoReport = false;
+    t.setJnContext({ queue: [{ id: 'ware-1', title: '第一讲' }], index: 0,
+        courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1' });
+    t.advance(1000);
+    t.fixture.video.duration = 173; // 2 分 53 秒
+    t.fixture.video.currentTime = 173;
+    t.fixture.video.ended = true; // 视频播放完毕
+    t.context.window.m_time = 173; // 原生计时当前在 173 秒（目标 180 秒）
+
+    // 1. 刚播完但 m_time 未达到 180 秒（还剩 7 秒）
+    t.jnHandlePlayer();
+    assert.match(t.state.statusText, /补齐挂课时长/);
+    assert.match(t.context.location.href, /OnLineRead/); // 绝不提前返回
+
+    // 2. 原生计时走到 179 秒
+    t.context.window.m_time = 179;
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /OnLineRead/);
+
+    // 3. 原生计时走到 180 秒（达到 3 分钟），平台触发上报
+    t.context.window.m_time = 180;
+    t.jnHandlePlayer();
+    assert.match(t.state.statusText, /已达挂课时长/);
+    assert.match(t.context.location.href, /OnLineRead/);
+
+    // 4. 等待 6 秒以上且观察到平台上报完成
+    t.advance(7000);
+    t.context.performance = { timeOrigin: 0, getEntriesByType: () => [{ name: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/SetTime.ashx?x=1', startTime: 2000 }] };
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /Layer_CourseInfo/);
+    assert.equal(t.getJnContext().index, 1);
+});
+
+test('金培极速模式与正常挂课模式偏好设置可切换与持久化', () => {
+    const t = setupJn();
+    assert.equal(t.CONFIG.jnAutoReport, false); // setupJn 显式设为 false
+    const normal = setup();
+    assert.equal(normal.CONFIG.jnAutoReport, true);
+    t.localStorageMap.set(t.STORAGE_KEYS.fastMode, '0');
+    assert.equal(t.localStorageMap.get('_kme_fast_mode'), '0');
+});
+
+test('金培正常挂课模式同时检查视频结束与平台计时，缓冲未播完绝不提前切课', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    t.CONFIG.jnAutoReport = false;
+    t.setJnContext({ queue: [{ id: 'ware-1', title: '第一讲' }], index: 0,
+        courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1' });
+    t.advance(1000);
+    t.fixture.video.duration = 173; // 2 分 53 秒
+    t.fixture.video.currentTime = 50; // 视频卡顿/缓冲，才播到 50 秒
+    t.fixture.video.ended = false;
+    t.context.window.m_time = 180; // 虽然平台计时虚高达到 180 秒
+
+    t.jnHandlePlayer();
+    // 必须继续播放视频，绝不能提前切课
+    assert.match(t.state.statusText, /正在播放金培课件/);
+    assert.match(t.context.location.href, /OnLineRead/);
+});
+
+test('金培正常挂课上报精确核对 LoginInfoId 与目标 pTime', () => {
+    const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
+    t.CONFIG.jnAutoReport = false;
+    t.elements.set('#txtLoginInfoId', { value: 'my-session-123' });
+    t.setJnContext({ queue: [{ id: 'ware-1', title: '第一讲' }], index: 0,
+        courseUrl: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/Layer_CourseInfo.aspx?CourseId=course-1' });
+    t.advance(1000);
+    t.fixture.video.duration = 173;
+    t.fixture.video.ended = true;
+    t.context.window.m_time = 180;
+    t.jnHandlePlayer();
+
+    t.advance(7000);
+    // 1. 错误的 session ID -> 拒绝
+    t.context.performance = { timeOrigin: 0, getEntriesByType: () => [{ name: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/SetTime.ashx?LoginInfoId=other-session&pTime=180', startTime: 2000 }] };
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /OnLineRead/);
+
+    // 2. 正确的 session ID 但 pTime 未达到目标 180 秒（如只有 60 秒） -> 拒绝
+    t.context.performance = { timeOrigin: 0, getEntriesByType: () => [{ name: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/SetTime.ashx?LoginInfoId=my-session-123&pTime=60', startTime: 2000 }] };
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /OnLineRead/);
+
+    // 3. 正确的 session ID 且 pTime 达到 180 秒 -> 匹配通过并切课
+    t.context.performance = { timeOrigin: 0, getEntriesByType: () => [{ name: 'https://jnftc.jnbank.com.cn/WebTraining14/Web/MyClass/SetTime.ashx?LoginInfoId=my-session-123&pTime=180', startTime: 2000 }] };
+    t.jnHandlePlayer();
+    assert.match(t.context.location.href, /Layer_CourseInfo/);
+    assert.equal(t.getJnContext().index, 1);
+});
+
 test('金培上报超时、播放器加载超时有限暂停，不误标完成', () => {
     const t = setupJn('/WebTraining14/Web/MyClass/OnLineRead.aspx?CoursewareId=ware-1');
     t.advance(1000); t.fixture.video.ended = true; t.jnHandlePlayer();
@@ -2486,7 +2577,7 @@ test('[HUD 更新提醒] 检测到远程新版本时在 HUD 标题栏显示更�
 
     assert.match(hud.innerHTML, /id="jinpei-hud-update-badge"[^>]*display:\s*inline-block/, '存在新版本时应展示更新徽标');
     assert.match(hud.innerHTML, />更新 v99\.0\.0<\/a>/, '更新徽标应展示新版本号');
-    assert.match(hud.innerHTML, /href="https:\/\/gh-proxy\.org\/[^"]*pc\.js"/, '更新徽标应链接到 userscript 下载地址');
+    assert.match(hud.innerHTML, /href="https:\/\/gh-proxy\.org\/[^"]*pc(?:\.user)?\.js"/, '更新徽标应链接到 userscript 下载地址');
 });
 
 test('[后台 Worker 防休眠] 支持创建定时调度器并在不支持 Worker 时平滑回退', async () => {

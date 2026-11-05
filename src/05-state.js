@@ -3,6 +3,17 @@
     const isSessionRunning = getStorageItem(STORAGE_KEYS.running, 'jinpei_auto_running') === 'true' ||
         (hasLiveActiveTabs && getLocalItem(STORAGE_KEYS.running) === 'true');
 
+    function initFastModeSetting() {
+        const pref = getLocalItem(STORAGE_KEYS.fastMode, '1');
+        CONFIG.jnAutoReport = pref !== '0';
+    }
+    initFastModeSetting();
+
+    function setFastModeSetting(enabled) {
+        CONFIG.jnAutoReport = Boolean(enabled);
+        setLocalItem(STORAGE_KEYS.fastMode, CONFIG.jnAutoReport ? '1' : '0');
+    }
+
     const state = {
         enabled: isSessionRunning,
         concurrency: getConcurrencySetting(),

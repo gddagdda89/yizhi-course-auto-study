@@ -4,6 +4,7 @@ const path = require('node:path');
 const pkgPath = path.join(__dirname, 'package.json');
 const srcDir = path.join(__dirname, 'src');
 const outputFile = path.join(__dirname, 'pc.js');
+const userScriptOutputFile = path.join(__dirname, 'pc.user.js');
 
 function getPackageVersion() {
     if (fs.existsSync(pkgPath)) {
@@ -110,16 +111,27 @@ if (require.main === module) {
             console.error('Error: pc.js does not exist. Run "npm run build".');
             process.exit(1);
         }
+        if (!fs.existsSync(userScriptOutputFile)) {
+            console.error('Error: pc.user.js does not exist. Run "npm run build".');
+            process.exit(1);
+        }
         const existing = fs.readFileSync(outputFile, 'utf8');
-        if (existing.replace(/\r\n/g, '\n') !== content.replace(/\r\n/g, '\n')) {
+        const existingUserScript = fs.readFileSync(userScriptOutputFile, 'utf8');
+        const normalizedContent = content.replace(/\r\n/g, '\n');
+        if (existing.replace(/\r\n/g, '\n') !== normalizedContent) {
             console.error('Error: pc.js is out of date with src/. Run "npm run build" to update.');
             process.exit(1);
         }
-        console.log('Build check passed: pc.js matches src/ modules.');
+        if (existingUserScript.replace(/\r\n/g, '\n') !== normalizedContent) {
+            console.error('Error: pc.user.js is out of date with src/. Run "npm run build" to update.');
+            process.exit(1);
+        }
+        console.log('Build check passed: pc.js and pc.user.js match src/ modules.');
     } else {
         fs.writeFileSync(outputFile, content, 'utf8');
+        fs.writeFileSync(userScriptOutputFile, content, 'utf8');
         const ver = explicitVersion || getPackageVersion() || 'unknown';
-        console.log(`Successfully built ${outputFile} (v${ver}) from ${srcDir} (${fs.readdirSync(srcDir).length} modules).`);
+        console.log(`Successfully built ${outputFile} and ${userScriptOutputFile} (v${ver}) from ${srcDir} (${fs.readdirSync(srcDir).length} modules).`);
     }
 }
 
